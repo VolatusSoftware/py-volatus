@@ -262,7 +262,10 @@ class Volatus:
         cluster = self.config.lookupClusterByName(self._node.clusterName)
         target = cluster.lookupNodeByName(nodeName)
         httpPort = target.network.httpPort
-        discovery = self._discovery.lookupNodeByName(nodeName)
+        discovery = None
+
+        if hasattr(self, '_discovery'):
+            discovery = self._discovery.lookupNodeByName(nodeName)
 
         if not discovery or not httpPort:
             return None
@@ -303,14 +306,15 @@ class Volatus:
         while not matched:
             status = await self.requestLogStatus()
 
+            matched = len(status) > 0
+            
             for nodeStatus in status.values():
                 if nodeStatus.state != state:
-                    if time.time() - start >= timeoutS:
-                        break
+                    matched = False
+                    break
 
-                    continue
-
-            matched = True
+            if time.time() - start >= timeoutS:
+                return False
 
         return matched
 
