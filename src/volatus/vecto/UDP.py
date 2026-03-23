@@ -1,6 +1,7 @@
 import socket
 import struct
 import time
+import asyncio
 
 from .proto.udp_payload_pb2 import *
 from .util import resolveAddress
@@ -10,54 +11,94 @@ __all__ = [
     'MulticastWriter'
 ]
 
-class MulticastReader(socket.socket):
+class _MulticastProtocol(asyncio.DatagramProtocol):
+    def __init__(self, queue: asyncio.Queue):
+        self._queue = queue
+        self.transport = None
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        self._queue.put_nowait(data)
+
+    def error_received(self, exc):
+        pass
+
+class MulticastReader:
     def __init__(self, multicastAddress: str, multicastPort: int, bindAddress: str = ''):
-        self._address= multicastAddress
+        self._address = multicastAddress
         self._port = multicastPort
         self._bind = resolveAddress(bindAddress)
-        self._joinReq = struct.pack("4sl", socket.inet_aton(self._address), socket.INADDR_ANY)
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._transport = None
+        self._protocol = None
+        self._sock = None
+        self._mreq = None
 
-        try:
-            super(MulticastReader, self).__init__(socket.AF_INET, socket.SOCK_DGRAM)
-            self.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.bind((self._bind, self._port))
-        except Exception as e:
-            print (str(e))
+    async def join(self):
+        loop = asyncio.get_running_loop()
 
-        self.settimeout(1)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((self._bind, self._port))
 
-    def join(self):
-        self.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._joinReq)
-    
-    def leave(self):
-        self.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, self._joinReq)
+        mreq = struct.pack("4sl", socket.inet_aton(self._address), socket.INADDR_ANY)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        sock.setblocking(False)
+
+        self._mreq = mreq
+        self._sock = sock
+
+        self._transport, self._protocol = await loop.create_datagram_endpoint(
+            lambda: _MulticastProtocol(self._queue),
+            sock=sock
+        )
+
+    async def leave(self):
+        if self._sock and self._mreq:
+            try:
+                self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, self._mreq)
+            except OSError:
+                pass
 
     def close(self):
-        self.leave()
-        super(MulticastReader, self).close()
+        if self._transport:
+            self._transport.close()
+            self._transport = None
 
-    def readUdpPayload(self) -> UdpPayload | None:
-        payload = self.recv(1500)
+    async def readUdpPayload(self, timeout: float = 1.0) -> UdpPayload | None:
+        try:
+            data = await asyncio.wait_for(self._queue.get(), timeout=timeout)
+            if len(data) == 0:
+                return None
+            udpPayload = UdpPayload()
+            udpPayload.ParseFromString(data)
+            return udpPayload
+        except asyncio.TimeoutError:
+            raise TimeoutError()
 
-        if len(payload) == 0:
-            return None
-        
-        udpPayload = UdpPayload()
-        udpPayload.ParseFromString(payload)
-        return udpPayload
-
-class MulticastWriter(socket.socket):
+class MulticastWriter:
     def __init__(self, multicastAddress: str, multicastPort: int, source_id: int, bindAddress: str = ''):
-        self._address= multicastAddress
+        self._address = multicastAddress
         self._port = multicastPort
         self._bind = resolveAddress(bindAddress)
-        self._joinReq = struct.pack("4sl", socket.inet_aton(self._address), socket.INADDR_ANY)
         self._msg = UdpPayload()
         self._msg.source_id = source_id
+        self._transport = None
 
-        super(MulticastWriter, self).__init__(socket.AF_INET, socket.SOCK_DGRAM)
-        self.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.bind((self._bind, self._port))
+    async def open(self):
+        loop = asyncio.get_running_loop()
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((self._bind, self._port))
+        sock.setblocking(False)
+
+        self._transport, _ = await loop.create_datagram_endpoint(
+            asyncio.DatagramProtocol,
+            sock=sock
+        )
 
     def sendPayload(self, payload: bytes, type: str, sequence: int) -> int:
         msg = self._msg
@@ -66,4 +107,11 @@ class MulticastWriter(socket.socket):
         msg.type = type
         msg.payload = payload
 
-        return self.sendto(msg.SerializeToString(), (self._address, self._port))
+        data = msg.SerializeToString()
+        self._transport.sendto(data, (self._address, self._port))
+        return len(data)
+
+    def close(self):
+        if self._transport:
+            self._transport.close()
+            self._transport = None

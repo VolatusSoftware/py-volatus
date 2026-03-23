@@ -1,8 +1,5 @@
-import socket
-import struct
 import time
-import threading
-import queue
+import asyncio
 from enum import Enum
 
 from ..config import VolatusConfig, NodeConfig
@@ -14,8 +11,6 @@ from .proto.tcp_server_hello_pb2 import *
 __all__ = [
     'TCPMessaging'
 ]
-
-thread_local = threading.local()
 
 class ClientState(Enum):
     UNKNOWN = 0
@@ -61,51 +56,33 @@ class TCPMessaging:
         self.state: str = 'UNKNOWN'
         self.vCfg = vCfg
         self.nodeCfg = nodeCfg
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connected = False
 
         self.id = nodeCfg.id
 
-        self._actionQ: queue.Queue[TCPAction] = queue.Queue()
-        self._sendQueue: queue.Queue[TcpPayload] = queue.Queue()
+        self._actionQ: asyncio.Queue[TCPAction] = asyncio.Queue()
+        self._sendQueue: asyncio.Queue[TcpPayload] = asyncio.Queue()
 
-        self.socket.settimeout(5)
+        self._task: asyncio.Task = None
+        self._reader: asyncio.StreamReader = None
+        self._writer: asyncio.StreamWriter = None
 
         if self.server:
             raise ValueError('Server mode is not implemented in Python yet.')
-        else:
-            self._thread = threading.Thread(target= self._clientLoop)
 
-        self._thread.start()
-    
+    def start(self):
+        self._task = asyncio.create_task(self._clientLoop())
+
     def open(self):
-        self._actionQ.put(TCPAction.OPEN)
+        self._actionQ.put_nowait(TCPAction.OPEN)
 
     def close(self):
-        self._actionQ.put(TCPAction.CLOSE)
-    
+        self._actionQ.put_nowait(TCPAction.CLOSE)
+
     def shutdown(self):
-        self._actionQ.put(TCPAction.SHUTDOWN)
+        self._actionQ.put_nowait(TCPAction.SHUTDOWN)
 
     def sendMsg(self, target: str | int, msgType: str, payload: bytes, sequence: int, task: str = '') -> int:
-        """Enqueues a message to be sent and returns the approximate size of the message queue.
-
-        Messages that are sent while not connected are discarded.
-
-        :param target: The ID or name of the target to send the message to.
-        :type target: str | int
-        :param msgType: The message ID that identifies the data type and purpose of the message being sent.
-        :type msgType: str
-        :param payload: A serialized message to be embedded within the TCP message that gets sent. Typically will be a serialized protobuf message.
-        :type payload: bytes
-        :param sequence: The count of payloads that have been sent from this application.
-        :type sequence: int
-        :param task: The specific task to send the message to in the target. If not specified will dispatch based on message ID, defaults to ''
-        :type task: str, optional
-        :raises ValueError: Raised when an invalid target is specified.
-        :return: The approximate queue size of messges to be sent.
-        :rtype: int
-        """
         targetId: int
         if type(target) == int:
             targetId = target
@@ -118,7 +95,6 @@ class TCPMessaging:
             raise ValueError('Target must be target name string or target ID int.')
 
         if targetId:
-            #timestamp (0) is set when actually sent
             toSend = TcpPayload()
             toSend.target_node = targetId
             toSend.source_id = self.id
@@ -126,11 +102,11 @@ class TCPMessaging:
             toSend.type = msgType
             toSend.task_id = task
             toSend.payload = payload
-            self._sendQueue.put(toSend)
+            self._sendQueue.put_nowait(toSend)
 
         return self._sendQueue.qsize()
 
-    def _clientLoop(self):
+    async def _clientLoop(self):
         clientHello = TcpClientHello()
         clientHello.node_id = self.nodeCfg.id
         clientHello.system = self.vCfg.system.name
@@ -139,29 +115,26 @@ class TCPMessaging:
         clientHello.config_version = str(self.vCfg.version)
         helloPayload = clientHello.SerializeToString()
 
-        tcpPayload = TcpPayload()
-        tcpPayload.source_id = self.nodeCfg.id
-
         state = ClientState.IDLE
         self.state = str(state)
 
         shutdown = False
-        open = False
+        stay_open = False
 
         while not shutdown:
-            #check actionQ for commands
+            # check actionQ for commands
             while not self._actionQ.empty():
                 action = self._actionQ.get_nowait()
                 match action:
                     case TCPAction.OPEN:
                         if state == ClientState.IDLE:
-                            open = True
+                            stay_open = True
                             state = ClientState.CONNECTING
                             self.state = str(state)
 
                     case TCPAction.CLOSE:
                         if state != ClientState.IDLE:
-                            open = False
+                            stay_open = False
                             state = ClientState.CLOSING
                             self.state = str(state)
 
@@ -171,21 +144,22 @@ class TCPMessaging:
                             state = ClientState.CLOSING
                             self.state = str(state)
 
-            #flush the queue while not connected
+            # flush the queue while not connected
             if state != ClientState.CONNECTED:
                 while not self._sendQueue.empty():
                     self._sendQueue.get_nowait()
 
             if state == ClientState.CONNECTING:
-                #make an attempt at connecting to the server
                 try:
-                    self.socket.connect((self.address, self.port))
+                    self._reader, self._writer = await asyncio.wait_for(
+                        asyncio.open_connection(self.address, self.port),
+                        timeout=5
+                    )
 
-                    # connection handshake, client starts by sending ClientHello
-                    self.__sendSized(helloPayload)
+                    # connection handshake
+                    await self.__sendSized(helloPayload)
 
-                    # server responds with ServerHello
-                    serverPayload = self.__recvSized()
+                    serverPayload = await self.__recvSized()
                     if serverPayload:
                         serverHello = TcpServerHello()
                         serverHello.ParseFromString(serverPayload)
@@ -196,39 +170,33 @@ class TCPMessaging:
                             raise RuntimeError(
                                 f'Connection error {serverHello.status} from server, aborting.'
                             )
-                except:
-                    pass
+                except Exception:
+                    await asyncio.sleep(0.5)
 
             if state == ClientState.CONNECTED:
-                #check for messages to send
+                # check for messages to send
                 while not self._sendQueue.empty():
                     payload = self._sendQueue.get_nowait()
                     payload.timestamp = time.time_ns()
 
                     try:
-                        self.__sendSized(payload.SerializeToString())
-                    except:
+                        await self.__sendSized(payload.SerializeToString())
+                    except Exception:
                         state = ClientState.CLOSING
                         self.state = str(state)
-                        continue
-
-                #check for incoming messages
-                # while True:
-                #     recvBytes = self.__recvSized()
-                #     if recvBytes:
-                #         tcpPayload.ParseFromString(recvBytes)
-                #         #TODO handle receiving messages
-                #     else:
-                #         state = ClientState.CLOSING
-                #         self.state = str(state)
-                #         break
+                        break
 
             if state == ClientState.CLOSING:
-                self.socket.shutdown(socket.SHUT_RDWR)
-                self.socket.close()
+                if self._writer:
+                    try:
+                        self._writer.close()
+                        await self._writer.wait_closed()
+                    except Exception:
+                        pass
+                    self._writer = None
+                    self._reader = None
 
-                if open and not shutdown:
-                    #error during send, try to reconnect
+                if stay_open and not shutdown:
                     state = ClientState.CONNECTING
                     self.state = str(state)
                 elif shutdown:
@@ -237,29 +205,22 @@ class TCPMessaging:
 
             self.connected = state == ClientState.CONNECTED
 
-    def __sendSized(self, payload: bytes):
+            # yield control to other tasks
+            await asyncio.sleep(0)
+
+    async def __sendSized(self, payload: bytes):
         l = len(payload)
         lb = l.to_bytes(4, 'little')
-        buf = lb + payload
-        self.socket.sendall(buf)
+        self._writer.write(lb + payload)
+        await self._writer.drain()
 
-    def __recvSized(self) -> bytes:
-        sizeBytes = self.socket.recv(4)
+    async def __recvSized(self) -> bytes:
+        sizeBytes = await self._reader.readexactly(4)
         if len(sizeBytes) == 0:
             return bytes()
-        else:
-            size = int.from_bytes(sizeBytes, 'little')
-            recvBytes = self.socket.recv(size)
-            if len(recvBytes) < size:
-                return bytes()
-            
-            return recvBytes
-        
+        size = int.from_bytes(sizeBytes, 'little')
+        recvBytes = await self._reader.readexactly(size)
+        return recvBytes
+
     def isConnected(self) -> bool:
         return self.connected
-
-    def _serverClientLoop(self):
-        pass
-
-    def _serverLoop(self):
-        pass

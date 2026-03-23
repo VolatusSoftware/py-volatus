@@ -7,11 +7,9 @@ from fastapi import FastAPI, APIRouter
 from enum import Enum
 
 import uvicorn
-import threading
 import os
 import signal
 import ipaddress
-import requests
 import json
 import time
 import asyncio
@@ -43,7 +41,7 @@ class LogStatus:
     def __init__(self, state: LogState, log: str):
         self.state = state
         self.log = log
-    
+
     def __str__(self) -> str:
         return json.dumps(self.__dict__)
 
@@ -87,7 +85,7 @@ class VCommand:
 class StartLogCommand(VCommand):
     """A prepared command to start logging across a set of target nodes that can be sent with send()
     """
-    
+
     def __init__(self,
                  targetName: str,
                  testName: str,
@@ -169,7 +167,20 @@ class Volatus:
             raise ValueError(
                 f'Unable to find node "{nodeName}" in cluster "{clusterName}".')
 
-        self.__initFromConfig()
+    async def __initFromConfig(self):
+        node = self._node
+        cluster = self._cluster
+
+        if cluster.discovery and node.network.announceInterval:
+            await self.__startDiscovery()
+
+        if node.network.httpPort:
+            await self.__startHTTP()
+
+        if node.network.tcp:
+            self.__startTCP()
+
+        self.__createTelemetry()
 
     def __createTelemetry(self):
         self._telemetry = Telemetry()
@@ -178,13 +189,21 @@ class Volatus:
         tcpCfg = self._node.network.tcp
 
         self._tcp = TCPMessaging(tcpCfg.address, tcpCfg.port, tcpCfg.server, self.config, self._node)
+        self._tcp.start()
         self._tcp.open()
 
-    def __startDiscovery(self):
+    async def __startDiscovery(self):
         self._discovery = DiscoveryService(self.config, self._node)
+        await self._discovery.start()
 
-    def _httpServer(self):
-        uvicorn.run(self._http, host='0.0.0.0', port= self._node.network.httpPort)
+    async def __startHTTP(self):
+        self._http = FastAPI()
+        self._http.add_api_route('/config/info', self._httpConfigInfo, methods=["GET"])
+
+        httpConfig = uvicorn.Config(self._http, host='0.0.0.0', port=self._node.network.httpPort)
+        self._httpServer = uvicorn.Server(httpConfig)
+        self._httpTask = asyncio.create_task(self._httpServer.serve())
+        await asyncio.sleep(0.5)  # give uvicorn server a chance to start
 
     def _httpConfigInfo(self):
         return {
@@ -196,45 +215,20 @@ class Volatus:
             'Hash': self.config.hash.upper()
         }
 
-    def __startHTTP(self):
-        self._httpThread = threading.Thread(target= self._httpServer)
-
-        self._http = FastAPI()
-
-        self._http.add_api_route('/config/info', self._httpConfigInfo, methods=["GET"])
-
-
-        self._httpThread.start()
-        time.sleep(1) # give uvicorn server a chance to start
-
-    def __initFromConfig(self):
-        node = self._node
-        cluster = self._cluster
-
-        if cluster.discovery and node.network.announceInterval:
-            self.__startDiscovery()
-
-        if node.network.httpPort:
-            self.__startHTTP()
-
-        if node.network.tcp:
-            self.__startTCP()
-        
-        self.__createTelemetry()
-
-    def __enter__(self):
+    async def __aenter__(self):
+        await self.__initFromConfig()
         return self
-    
-    def __exit__(self, type, value, traceback):
-        self.shutdown()
+
+    async def __aexit__(self, type, value, traceback):
+        await self.shutdown()
 
     def __nextSeq(self) -> int:
         seq = self._seq
         self._seq += 1
         return seq
 
-    def shutdown(self):
-        """Stops all communication threads managed by the Volatus framework to prepare for reloading configuration or stopping the Python app.
+    async def shutdown(self):
+        """Stops all communication tasks managed by the Volatus framework to prepare for reloading configuration or stopping the Python app.
         """
         if hasattr(self, '_discovery'):
             self._discovery.shutdown()
@@ -245,8 +239,10 @@ class Volatus:
         if hasattr(self, '_telemetry'):
             self._telemetry.shutdown()
 
-        if hasattr(self, '_http'):
-            self._httpThread.join(timeout=0.0)
+        if hasattr(self, '_httpServer'):
+            self._httpServer.should_exit = True
+            if hasattr(self, '_httpTask'):
+                await self._httpTask
 
     def lookupTargetId(self, targetName: str) -> int | None:
         """Looks up the numeric ID used to route a message to the desired node(s).
@@ -257,20 +253,20 @@ class Volatus:
         node = self._cluster.lookupNodeByName(targetName)
         if node:
             return node.id
-        
+
         #check if target is a targetGroup
         targetGroup = self._cluster.lookupTargetGroupId(targetName)
         return targetGroup
-    
+
     def nodeHttpUrl(self, nodeName: str, urlPath: str) -> str | None:
         cluster = self.config.lookupClusterByName(self._node.clusterName)
         target = cluster.lookupNodeByName(nodeName)
         httpPort = target.network.httpPort
         discovery = self._discovery.lookupNodeByName(nodeName)
-        
+
         if not discovery or not httpPort:
             return None
-        
+
         ip = ipaddress.ip_address(discovery.ip)
         return f"http://{ip}:{httpPort}{urlPath}"
 
@@ -300,7 +296,7 @@ class Volatus:
                 status[nodeName] = LogStatus(state, log)
 
         return status
-    
+
     async def waitForLogState(self, state: LogState, timeoutS: float = 5) -> bool:
         start = time.time()
         matched = False
@@ -308,7 +304,7 @@ class Volatus:
             status = await self.requestLogStatus()
 
             for nodeStatus in status.values():
-                if nodeStatus.state != state:   
+                if nodeStatus.state != state:
                     if time.time() - start >= timeoutS:
                         break
 
@@ -317,14 +313,14 @@ class Volatus:
             matched = True
 
         return matched
-    
+
     async def listLogs(self, nodeName: str) -> list[str] | None:
         logs = []
         url = self.nodeHttpUrl(nodeName, "/log/list")
 
         if not url:
             return None
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 try:
@@ -333,17 +329,17 @@ class Volatus:
                     pass
 
         return logs
-    
+
     async def prepareLog(self, nodeName: str, logName: str, waitUntilDone: bool = True) -> bool | None:
         logs = await self.listLogs(nodeName)
         if not logName in logs:
             return None
-        
+
         prepUrl = self.nodeHttpUrl(nodeName, f'/log/prepare/{logName}')
 
         if not prepUrl:
             return None
-        
+
         statusUrl = self.nodeHttpUrl(nodeName, f'/log/status/{logName}')
 
         async with aiohttp.ClientSession() as session:
@@ -351,7 +347,7 @@ class Volatus:
                 result = await response.text()
                 if result != "Preparing":
                     return None
-                
+
             if waitUntilDone:
                 done = False
                 while not done:
@@ -362,7 +358,7 @@ class Volatus:
                             done = True
 
                 return True
-            
+
         return False
 
     async def downloadLog(self, nodeName: str, logName: str, localFolder: Path) -> Path | None:
@@ -371,7 +367,7 @@ class Volatus:
             async with session.get(downloadUrl) as response:
                 if response.status != 200:
                     raise aiohttp.ClientError(f'({response.status} - {await response.text()})')
-                
+
                 filePath = localFolder.joinpath(f'{logName}.zip')
                 async with aiofiles.open(filePath, 'wb') as file:
                     async for data, _ in response.content.iter_chunks():
@@ -400,12 +396,12 @@ class Volatus:
         chan = self.config.lookupChannelByName(chanName)
         if not chan:
             raise ValueError(f'Unknown channel "{chanName}".')
-        
+
         targetName = chan.nodeName
         taskName = chan.taskName
 
         return VCommand(targetName, 'cmd_digital', cmd.SerializeToString(), self.__nextSeq, self._tcp.sendMsg, taskName)
-    
+
     def createAnalogCommand(self, chanName: str, value: float) -> VCommand:
         """Prepares an analog/numeric command to send to a Volatus system.
 
@@ -426,7 +422,7 @@ class Volatus:
         chan = self.config.lookupChannelByName(chanName)
         if not chan:
             raise ValueError(f'Unknown channel "{chanName}"')
-        
+
         targetName = chan.nodeName
         taskName = chan.taskName
 
@@ -453,18 +449,18 @@ class Volatus:
             val = cmd.values.add()
             val.channel = chanName
             val.value = value
-            
+
             chan = self.config.lookupChannelByName(chanName)
             if not chan:
                 raise ValueError(f'Unknown channel "{chanName}"')
-            
+
             if not targetName:
                 targetName = chan.nodeName
                 taskName = chan.taskName
             else:
                 if targetName != chan.nodeName or taskName != chan.taskName:
                     raise ValueError('Multiple command can only include channels from a single node/task.')
-        
+
         return VCommand(targetName, 'cmd_digital_multiple', cmd.SerializeToString(), self.__nextSeq(), self._tcp.sendMsg, taskName)
 
     def createAnalogMultipleCommand(self, values: list[tuple[str, float]]) -> VCommand:
@@ -488,20 +484,20 @@ class Volatus:
             val = cmd.values.add()
             val.channel = chanName
             val.value = value
-            
+
             chan = self.config.lookupChannelByName(chanName)
             if not chan:
                 raise ValueError(f'Unknown channel "{chanName}"')
-            
+
             if not targetName:
                 targetName = chan.nodeName
                 taskName = chan.taskName
             else:
                 if targetName != chan.nodeName or taskName != chan.taskName:
                     raise ValueError('Multiple command can only include channels from a single node/task.')
-        
+
         return VCommand(targetName, 'cmd_analog_multiple', cmd.SerializeToString(), self.__nextSeq(), self._tcp.sendMsg, taskName)
-    
+
     def createStartLogCommand(self, targetName: str, testName: str, startedBy: str, timestamp: str = '') -> VCommand:
         """Prepare a Start Log command to send to a Volatus system.
 
@@ -527,13 +523,13 @@ class Volatus:
         )
 
         return cmd
-    
+
     def createStopLogCommand(self, targetName: str, reason: str) -> VCommand:
         cmd = StopLog()
         cmd.reason = reason
         return VCommand(targetName, 'stop_log', cmd.SerializeToString(), self.__nextSeq, self._tcp.sendMsg)
 
-    def subscribe(self, groupName: str, timeout_s: float = None) -> tuple[ChannelGroup, bool]:
+    async def subscribe(self, groupName: str, timeout_s: float = None) -> tuple[ChannelGroup, bool]:
         """Subscribes to the telemetry data from the specified group.
 
         Groups are named collections of channels that are published together. Once subscribed, the channels within the group
@@ -549,14 +545,14 @@ class Volatus:
         :rtype: tuple[ChannelGroup, bool]
         """
 
-        
+
         if self._telemetry:
             groupCfg = self.config.lookupGroupByName(groupName)
 
             if not groupCfg:
                 raise ValueError(f'Unknown group name "{groupName}".')
-            
-            return self._telemetry.subscribeToGroupCfg(groupCfg, timeout_s)
+
+            return await self._telemetry.subscribeToGroupCfg(groupCfg, timeout_s)
 
         raise RuntimeError('Volatus is not configured for networking and the telemetry component is not available.')
 
@@ -579,7 +575,7 @@ class Volatus:
         msg.events.append(event)
 
         return VCommand(targetName, 'v:Events', msg.SerializeToString(), self.__nextSeq, self._tcp.sendMsg)
-    
+
     def createReportErrorMsg(self, targetName: str, errCode: int, errMsg: str,
                              context: str, message: str = '') -> VCommand:
         event = Event()

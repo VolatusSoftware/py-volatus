@@ -1,33 +1,17 @@
 import time
-import threading
-import queue
+import asyncio
 import ipaddress
-from enum import Enum
 
 from .config import Cfg, GroupConfig, ChannelConfig, EndpointConfig, VolatusConfig, NodeConfig
 from .vecto.UDP import MulticastReader, MulticastWriter
 from .vecto import util
 from .vecto.proto import discovery_pb2
 
-class DiscoveryActionType(Enum):
-    UNKNOWN = 0
-    CLOSE = 1
-
-class DiscoveryAction:
-    def __init__(self, type: DiscoveryActionType):
-        self.type = type
-
-class DiscoveryActionClose(DiscoveryAction):
-    def __init__(self):
-        super(DiscoveryActionClose, self).__init__(DiscoveryActionType.CLOSE)
-
 class DiscoveryService:
 
     def __init__(self, vCfg: VolatusConfig, nodeCfg: NodeConfig):
         self._cluster = vCfg.lookupClusterByName(nodeCfg.clusterName)
-        self._nodesLock = threading.Lock()
         self._nodes: dict[str, discovery_pb2.Discovery] = dict()
-        self._actions: queue.Queue[DiscoveryAction] = queue.Queue()
         self._nodeCfg = nodeCfg
         self._vCfg = vCfg
         self._close = False
@@ -35,27 +19,29 @@ class DiscoveryService:
         self._reader = MulticastReader(self._cluster.discovery.address,
                                        self._cluster.discovery.port,
                                        nodeCfg.network.bindAddress)
-        
+
         self._writer = MulticastWriter(self._cluster.discovery.address,
                                        self._cluster.discovery.port,
                                        nodeCfg.id,
                                        nodeCfg.network.bindAddress)
 
-        self._readerThread: threading.Thread = threading.Thread(target= self._readerLoop)
-        self._writerThread: threading.Thread = threading.Thread(target= self._writerLoop)
+        self._readerTask: asyncio.Task = None
+        self._writerTask: asyncio.Task = None
 
-        self._readerThread.start()
-        self._writerThread.start()
+    async def start(self):
+        await self._reader.join()
+        await self._writer.open()
+        self._readerTask = asyncio.create_task(self._readerLoop())
+        self._writerTask = asyncio.create_task(self._writerLoop())
 
     def shutdown(self):
-        self._actions.put(DiscoveryActionClose())
+        self._close = True
 
     def lookupNodeByName(self, nodeName: str) -> discovery_pb2.Discovery:
         return self._nodes.get(nodeName)
 
-    def _writerLoop(self):
+    async def _writerLoop(self):
         interval = self._nodeCfg.network.announceInterval
-        lastAnnounce = 0
 
         bindAddress = util.resolveAddress(self._nodeCfg.network.bindAddress)
 
@@ -79,48 +65,35 @@ class DiscoveryService:
 
         payload = discovery.SerializeToString()
 
+        lastAnnounce = 0
+
         while not self._close:
             now = time.time()
             if now - lastAnnounce > interval:
                 self._writer.sendPayload(payload, 'v:Discovery', 0)
                 lastAnnounce = now
 
-            time.sleep(0.2)
+            await asyncio.sleep(0.2)
 
-    def _readerLoop(self):
-        #connect to multicast
-        self._reader.join()
+        self._writer.close()
 
+    async def _readerLoop(self):
         discovery = discovery_pb2.Discovery()
 
         while not self._close:
-            #check for actions
-            while not self._actions.empty():
-                action = self._actions.get()
-                match action.type:
-                    case DiscoveryActionType.CLOSE:
-                        self._close = True
-                        continue
-            
-            if not self._close:
-                #check reader for incoming discovery packets
-                try:
-                    udpPayload = self._reader.readUdpPayload()
-                    if not udpPayload:
-                        #disconnected or other error, rejoin
-                        self._reader.leave()
-                        self._reader.join()
-                        continue
+            try:
+                udpPayload = await self._reader.readUdpPayload()
+                if not udpPayload:
+                    self._reader.close()
+                    await self._reader.join()
+                    continue
 
-                    match udpPayload.type:
-                        case 'v:Discovery':
-                            discovery.ParseFromString(udpPayload.payload)
+                match udpPayload.type:
+                    case 'v:Discovery':
+                        discovery.ParseFromString(udpPayload.payload)
+                        self._nodes[discovery.name] = discovery
 
-                            with self._nodesLock:
-                                self._nodes[discovery.name] = discovery
+            except TimeoutError:
+                pass
 
-                except TimeoutError:
-                    pass
-        
         self._reader.close()
-

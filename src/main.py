@@ -2,7 +2,7 @@ from volatus.config import Cfg
 from volatus.volatus import Volatus, EventLevel, LogState
 from volatus.telemetry import ChannelGroup, ChannelValue
 
-import time, asyncio
+import asyncio
 
 # provide a "cleaner" path format that doesn't trip up on escape sequences.
 # this is the same format used for paths in vjson files.
@@ -13,20 +13,20 @@ async def main():
     # create the top level Volatus object. The Volatus class handles config loading
     # and initializing the components as configured. With the Context Manager support
     # the initialized volatus object is automatically shutdown at the end of the with block.
-    with Volatus(cfgPath, 'TestSystem', 'TestCluster', 'PyScript') as v:
+    async with Volatus(cfgPath, 'TestSystem', 'TestCluster', 'PyScript') as v:
 
         gAI: ChannelGroup
         hasData: bool
 
         # subscribe to a known group we're interested in reading published data from
-        gAI, hasData = v.subscribe('TestAI', 2)
+        gAI, hasData = await v.subscribe('TestAI', 2)
 
         if hasData:
             print("Data valid within timeout.")
         else:
             print("No data received yet.")
-        
-        gLog, hasLogData = v.subscribe('Logging_Status', 5)
+
+        gLog, hasLogData = await v.subscribe('Logging_Status', 5)
 
         if hasLogData:
             print("Subscribed to logging status")
@@ -55,7 +55,7 @@ async def main():
         # run long enough to get some discovery packets out
         for i in range(20):
             print(ch0.value)
-            time.sleep(0.1)
+            await asyncio.sleep(0.1)
 
         # turn digital output back off
         v.createDigitalCommand('Heater_En', False).send()
