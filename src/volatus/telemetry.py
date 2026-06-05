@@ -2,9 +2,9 @@ import time
 import asyncio
 from enum import Enum
 
-from .config import Cfg, GroupConfig, ChannelConfig, EndpointConfig
-from ..vecto.UDP import MulticastReader, MulticastWriter
-from ..proto import group_data_pb2, string_data_pb2
+from .config import Cfg, GroupConfig, ChannelConfig, EndpointConfig, TelemetryConfig, TelemetryRouting
+from vecto.UDP import UdpReader, UdpWriter
+from proto import group_data_pb2, string_data_pb2
 
 __all__ = [
     'Telemetry',
@@ -98,7 +98,7 @@ class Subscriber:
     def __init__(self, endpt: EndpointConfig, bindAddress: str = '0.0.0.0'):
         self._endpoint = endpt
         self._pendingGroups: asyncio.Queue[ChannelGroup] = asyncio.Queue()
-        self._reader = MulticastReader(endpt.address, endpt.port, bindAddress)
+        self._reader = UdpReader(endpt.address, endpt.port, bindAddress)
         self._groups: dict[str, ChannelGroup] = dict()
         self._close = False
         self._task: asyncio.Task = None
@@ -108,8 +108,8 @@ class Subscriber:
         self._task = asyncio.create_task(self._readLoop())
 
     def addGroup(self, group: ChannelGroup):
-        if group.config.publishConfig != self._endpoint:
-            raise ValueError(f'Group {group.name} does not match subscriber endpoint of {str(self._endpoint)}')
+        #if group.config.publishConfig != self._endpoint:
+        #    raise ValueError(f'Group {group.name} does not match subscriber endpoint of {str(self._endpoint)}')
 
         self._pendingGroups.put_nowait(group)
 
@@ -161,7 +161,9 @@ class Telemetry:
         self._subscribers: dict[EndpointConfig, Subscriber] = dict()
         self._groups = dict()
 
-    async def subscribeToGroupCfg(self, groupCfg: GroupConfig,
+    async def subscribe(self, 
+                            telemConfig: TelemetryConfig,
+                            groupCfg: GroupConfig,
                             timeout_s: float = None,
                             bindAddress: str = '0.0.0.0') -> tuple[ChannelGroup, bool]:
         """Subscribes to a group based on its configuration.
@@ -177,13 +179,16 @@ class Telemetry:
         # check to see if group already exists
         group = self._groups.get(groupCfg.name)
         if not group:
-            endpt = groupCfg.publishConfig
+            endpt = telemConfig.endpt
+
+            if telemConfig.routing == TelemetryRouting.Multicast:
+                endpt = groupCfg.publishConfig
 
             group = ChannelGroup(groupCfg)
             self._groups[group.name] = group
 
             if not endpt:
-                raise ValueError(f'Group {groupCfg.name()} does not have a publish config and cannot be subscribed to.')
+                raise ValueError(f'No valid telemetry config for Group {groupCfg.name()} and it cannot be subscribed to. Ensure a Unicast telemetry config is provided or a group publish config.')
 
             if endpt in self._subscribers:
                 sub = self._subscribers[endpt]
@@ -201,6 +206,7 @@ class Telemetry:
         if timeout_s is not None and not hasData:
             start = time.time()
 
+            #chan.time_ns is updated asynchronously via the udp read loop
             while time.time() - start < timeout_s and chan.time_ns == 0:
                 await asyncio.sleep(0.01)
 

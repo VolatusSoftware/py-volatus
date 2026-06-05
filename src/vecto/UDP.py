@@ -3,7 +3,7 @@ import struct
 import time
 import asyncio
 
-from ..proto.udp_payload_pb2 import *
+from proto.udp_payload_pb2 import *
 from .util import resolveAddress
 
 __all__ = [
@@ -107,7 +107,10 @@ class UdpWriter:
         loop = asyncio.get_running_loop()
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        if (self._multicast):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
         sock.bind((self._bind, self._port))
         sock.setblocking(False)
 

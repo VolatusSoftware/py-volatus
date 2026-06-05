@@ -19,11 +19,11 @@ import aiofiles
 from volatus.telemetry import Telemetry, ChannelGroup
 from volatus.config import VolatusConfig, NodeConfig, ConfigLoader, ClusterConfig
 from vecto.TCP import TCPMessaging
-from ..proto.cmd_digital_pb2 import CmdDigital, CmdDigitalMultiple
-from ..proto.cmd_analog_pb2 import CmdAnalog, CmdAnalogMultiple
-from ..proto.start_log_pb2 import StartLog
-from ..proto.stop_log_pb2 import StopLog
-from ..proto.event_pb2 import EventLevel, Event, Events
+from proto.cmd_digital_pb2 import CmdDigital, CmdDigitalMultiple
+from proto.cmd_analog_pb2 import CmdAnalog, CmdAnalogMultiple
+from proto.start_log_pb2 import StartLog
+from proto.stop_log_pb2 import StopLog
+from proto.event_pb2 import EventLevel, Event, Events
 
 class LogState(Enum):
     Unknown = 0
@@ -168,10 +168,6 @@ class Volatus:
 
     async def __initFromConfig(self):
         node = self._node
-        cluster = self._cluster
-
-        if cluster.discovery and node.network.announceInterval:
-            await self.__startDiscovery()
 
         if node.network.httpPort:
             await self.__startHTTP()
@@ -551,7 +547,7 @@ class Volatus:
             if not groupCfg:
                 raise ValueError(f'Unknown group name "{groupName}".')
 
-            return await self._telemetry.subscribeToGroupCfg(groupCfg, timeout_s)
+            return await self._telemetry.subscribe(self._cluster.telemetry, groupCfg, timeout_s)
 
         raise RuntimeError('Volatus is not configured for networking and the telemetry component is not available.')
 

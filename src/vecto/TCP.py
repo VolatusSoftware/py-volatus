@@ -1,12 +1,13 @@
 import time
 import asyncio
+import socket
 from enum import Enum
 
-from ..volatus.config import VolatusConfig, NodeConfig
+from volatus.config import VolatusConfig, NodeConfig
 
-from ..proto.tcp_payload_pb2 import *
-from ..proto.tcp_client_hello_pb2 import *
-from ..proto.tcp_server_hello_pb2 import *
+from proto.tcp_payload_pb2 import *
+from proto.tcp_client_hello_pb2 import *
+from proto.tcp_server_hello_pb2 import *
 
 __all__ = [
     'TCPMessaging'
@@ -113,6 +114,7 @@ class TCPMessaging:
         clientHello.cluster = self.nodeCfg.clusterName
         clientHello.node_name = self.nodeCfg.name
         clientHello.config_version = str(self.vCfg.version)
+        clientHello.node_alias = socket.gethostname()
         helloPayload = clientHello.SerializeToString()
 
         state = ClientState.IDLE
