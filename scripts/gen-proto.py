@@ -34,7 +34,7 @@ def main():
             "--python_out=" + str(outDir),
             proto
             ])
-        print (" Done")
+        print ("Done")
 
 
 if __name__ == "__main__":

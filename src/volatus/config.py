@@ -62,6 +62,41 @@ class EndpointConfig:
     def tuple(self) -> tuple[str, int]:
         return (self.address, self.port)
 
+class TelemetryRouting(Enum):
+    UNKNOWN = 0
+    Multicast = 1
+    Unicast = 2
+
+    def __str__(self):
+        return f'{self.name}'
+    
+    def fromStr(s: str) -> 'TelemetryRouting':
+        if not s:
+            return None
+        
+        try:
+            e = TelemetryRouting[s]
+            return e
+        except KeyError:
+            return TelemetryRouting.UNKNOWN
+    
+class TelemetryConfig:
+    def __init__(self, routing: TelemetryRouting, endpt: EndpointConfig):
+        self.routing: TelemetryRouting = type
+        self.endpt: EndpointConfig = endpt
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, TelemetryConfig):
+            return self.routing == other.routing and self.endpt == other.endpt
+        else:
+            return NotImplemented
+        
+    def __hash__(self) -> int:
+        return hash(str(self))
+
+    def __str__(self) -> str:
+        return f'{self.routing}@{self.endpt}'
+
 class ChannelConfig:
     def __init__(self, name: str, groupName: str, taskName: str, nodeName: str, clusterName: str,
                  defaultValue: str | float = None, resource: str = ''):
@@ -176,9 +211,9 @@ class NodeConfig:
         return self.tasks.get(taskName)
 
 class ClusterConfig:
-    def __init__(self, name: str, discoveryEndpoint: EndpointConfig = None, targetGroups: dict[str, int] = None, nodes: list[NodeConfig] = None):
+    def __init__(self, name: str, telemetryConfig: TelemetryConfig = None, targetGroups: dict[str, int] = None, nodes: list[NodeConfig] = None):
         self.name = name
-        self.discovery = discoveryEndpoint
+        self.telemetry = telemetryConfig
         self.targetGroups = targetGroups
         self.nodes: dict[str, NodeConfig] = dict()
 
@@ -599,9 +634,17 @@ class ConfigLoader:
         if discObj:
             disc = EndpointConfig(discObj['Address'], discObj['Port'])
 
+        telemObj = clusterObj.get('Telemetry')
+        telem = None
+        if telemObj:
+            routing: TelemetryRouting = TelemetryRouting.fromStr(telemObj['Routing'])
+            endptObj = telemObj.get('Endpoint')
+            endpt: EndpointConfig = EndpointConfig(endptObj['Address'], endptObj['Port'])
+            telem = TelemetryConfig(routing, endpt)
+
         groupsObj = clusterObj.get('Groups')
         
-        cluster = ClusterConfig(clusterName, disc, groupsObj)
+        cluster = ClusterConfig(clusterName, telem, groupsObj)
         system.addCluster(cluster)
 
         nodesObj = clusterObj.get('Nodes')
