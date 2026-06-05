@@ -9,41 +9,30 @@ def main():
     print(" * This expects lv-vecto cloned as a sibling of lv-volatus.")
     print(" * Ensure protoc is available on the path and is available in the shell.")
 
-    volatusRoot = Path(__file__).parent.parent.parent
-    vectoRoot = volatusRoot.parent.joinpath("lv-vecto")
+    root = Path(__file__).parent.parent
+    print(f"\nRoot: {root}")
 
-    volatusProtoDir = volatusRoot.joinpath("proto")
-    vectoProtoDir = vectoRoot.joinpath("proto")
+    protoRoot = root.joinpath("proto-volatus").joinpath("proto")
+    print(f"Proto Root: {protoRoot}")
 
-    volatusProtoDefs = glob(str(volatusProtoDir) + "\\*.proto")
-    vectoProtoDefs = glob(str(vectoProtoDir) + "\\*.proto")
+    outDir = root.joinpath("src").joinpath("proto")
+    print(f"Out dir: {outDir}")
 
-    volatusOutDir = Path(__file__).parent.parent.joinpath("src").joinpath("volatus").joinpath("proto")
-    vectoOutDir = volatusOutDir.parent.joinpath("vecto").joinpath("proto")
+    protoDefs = glob(str(protoRoot) + "\\*.proto")
+    print("\n  == Generating messages ==")
 
-    print("\n  == Generating base Vecto messages ==")
+    if not outDir.exists():
+        print(f"Creating output directory: {outDir}")
+        outDir.mkdir(parents=True)
 
-    for vectoProto in vectoProtoDefs:
-        print("Building proto message for " + vectoProto + " ...", end="")
+    for proto in protoDefs:
+        print("Building proto message for " + proto + " ... ", end="")
         subprocess.run([
             "protoc",
-            "--proto_path=" + str(vectoProtoDir),
-            "--pyi_out=" + str(vectoOutDir),
-            "--python_out=" + str(vectoOutDir),
-            vectoProto
-            ])
-        print (" Done")
-    
-    print("\n == Generating Volatus messages ==")
-
-    for volatusProto in volatusProtoDefs:
-        print("Building proto message for " + volatusProto + " ...", end="")
-        subprocess.run([
-            "protoc",
-            "--proto_path=" + str(volatusProtoDir),
-            "--pyi_out=" + str(volatusOutDir),
-            "--python_out=" + str(volatusOutDir),
-            volatusProto
+            "--proto_path=" + str(protoRoot),
+            "--pyi_out=" + str(outDir),
+            "--python_out=" + str(outDir),
+            proto
             ])
         print (" Done")
 

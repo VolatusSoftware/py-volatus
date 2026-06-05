@@ -3,8 +3,8 @@ import asyncio
 from enum import Enum
 
 from .config import Cfg, GroupConfig, ChannelConfig, EndpointConfig
-from .vecto.UDP import MulticastReader, MulticastWriter
-from .vecto.proto import group_data_pb2, string_data_pb2
+from ..vecto.UDP import MulticastReader, MulticastWriter
+from ..proto import group_data_pb2, string_data_pb2
 
 __all__ = [
     'Telemetry',

@@ -16,15 +16,14 @@ import asyncio
 import aiohttp
 import aiofiles
 
-from volatus.discovery import DiscoveryService
 from volatus.telemetry import Telemetry, ChannelGroup
 from volatus.config import VolatusConfig, NodeConfig, ConfigLoader, ClusterConfig
-from volatus.vecto.TCP import TCPMessaging
-from volatus.proto.cmd_digital_pb2 import CmdDigital, CmdDigitalMultiple
-from volatus.proto.cmd_analog_pb2 import CmdAnalog, CmdAnalogMultiple
-from volatus.proto.start_log_pb2 import StartLog
-from volatus.proto.stop_log_pb2 import StopLog
-from volatus.proto.event_pb2 import EventLevel, Event, Events
+from vecto.TCP import TCPMessaging
+from ..proto.cmd_digital_pb2 import CmdDigital, CmdDigitalMultiple
+from ..proto.cmd_analog_pb2 import CmdAnalog, CmdAnalogMultiple
+from ..proto.start_log_pb2 import StartLog
+from ..proto.stop_log_pb2 import StopLog
+from ..proto.event_pb2 import EventLevel, Event, Events
 
 class LogState(Enum):
     Unknown = 0
@@ -191,10 +190,6 @@ class Volatus:
         self._tcp = TCPMessaging(tcpCfg.address, tcpCfg.port, tcpCfg.server, self.config, self._node)
         self._tcp.start()
         self._tcp.open()
-
-    async def __startDiscovery(self):
-        self._discovery = DiscoveryService(self.config, self._node)
-        await self._discovery.start()
 
     async def __startHTTP(self):
         self._http = FastAPI()

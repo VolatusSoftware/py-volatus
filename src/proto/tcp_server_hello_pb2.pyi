@@ -13,12 +13,14 @@ class ConnectStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     STATUS_BAD_CONFIG: _ClassVar[ConnectStatus]
     STATUS_BAD_SYSTEM: _ClassVar[ConnectStatus]
     STATUS_BAD_CLUSTER: _ClassVar[ConnectStatus]
+    STATUS_NOT_ALLOWED: _ClassVar[ConnectStatus]
 STATUS_UNKNOWN: ConnectStatus
 STATUS_SUCCESS: ConnectStatus
 STATUS_ERROR: ConnectStatus
 STATUS_BAD_CONFIG: ConnectStatus
 STATUS_BAD_SYSTEM: ConnectStatus
 STATUS_BAD_CLUSTER: ConnectStatus
+STATUS_NOT_ALLOWED: ConnectStatus
 
 class TcpServerHello(_message.Message):
     __slots__ = ("status",)
