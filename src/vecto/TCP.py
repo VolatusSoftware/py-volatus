@@ -8,6 +8,7 @@ from volatus.config import VolatusConfig, NodeConfig
 from proto.tcp_payload_pb2 import *
 from proto.tcp_client_hello_pb2 import *
 from proto.tcp_server_hello_pb2 import *
+from proto.tcp_client_list_pb2 import *
 
 __all__ = [
     'TCPMessaging'
@@ -63,6 +64,8 @@ class TCPMessaging:
 
         self._actionQ: asyncio.Queue[TCPAction] = asyncio.Queue()
         self._sendQueue: asyncio.Queue[TcpPayload] = asyncio.Queue()
+        self._readQueue: asyncio.Queue[TcpPayload] = asyncio.Queue()
+        self._clients: dict[str, TcpClientInfo] = dict()
 
         self._task: asyncio.Task = None
         self._reader: asyncio.StreamReader = None
@@ -115,6 +118,7 @@ class TCPMessaging:
         clientHello.node_name = self.nodeCfg.name
         clientHello.config_version = str(self.vCfg.version)
         clientHello.node_alias = socket.gethostname()
+        clientHello.config_hash = self.vCfg.hash
         helloPayload = clientHello.SerializeToString()
 
         state = ClientState.IDLE
@@ -122,6 +126,8 @@ class TCPMessaging:
 
         shutdown = False
         stay_open = False
+
+        readPayload = TcpPayload()
 
         while not shutdown:
             # check actionQ for commands
@@ -161,7 +167,7 @@ class TCPMessaging:
                     # connection handshake
                     await self.__sendSized(helloPayload)
 
-                    serverPayload = await self.__recvSized()
+                    serverPayload = await self.__recvSized(10)
                     if serverPayload:
                         serverHello = TcpServerHello()
                         serverHello.ParseFromString(serverPayload)
@@ -172,7 +178,7 @@ class TCPMessaging:
                             raise RuntimeError(
                                 f'Connection error {serverHello.status} from server, aborting.'
                             )
-                except Exception:
+                except Exception as e:
                     await asyncio.sleep(0.5)
 
             if state == ClientState.CONNECTED:
@@ -187,6 +193,36 @@ class TCPMessaging:
                         state = ClientState.CLOSING
                         self.state = str(state)
                         break
+
+                # check for receieved messages
+                while True:
+                    try:
+                        readPayload.ParseFromString(await self.__recvSized(0.05))
+                    except asyncio.TimeoutError:
+                        break
+                    except Exception as e:
+                        state = ClientState.CLOSING
+                        self.state = str(state)
+                        break
+
+                    if readPayload.type.startswith('v:'):
+                        # built-in messages start with 'v:'
+                        match readPayload.type:
+                            case "v:ClientList":
+                                clients = TcpClientList.FromString(readPayload.payload)
+                                clientDict: dict[str, list[TcpClientInfo]] = dict()
+                                for client in clients.clients:
+                                    nodeList = clientDict.get(client.node_name)
+                                    if nodeList:
+                                        nodeList.apped(client)
+                                    else:
+                                        clientDict[client.node_name] = [client]
+
+                                print(clientDict)
+                                self._clients = clientDict
+                                break
+                    else:
+                        self._readQueue.put_nowait(readPayload)
 
             if state == ClientState.CLOSING:
                 if self._writer:
@@ -216,13 +252,23 @@ class TCPMessaging:
         self._writer.write(lb + payload)
         await self._writer.drain()
 
-    async def __recvSized(self) -> bytes:
-        sizeBytes = await self._reader.readexactly(4)
+    async def __recvSized(self, timeout: float) -> bytes | None:
+        sizeBytes = await asyncio.wait_for(self._reader.readexactly(4), timeout)
         if len(sizeBytes) == 0:
-            return bytes()
+            return None
         size = int.from_bytes(sizeBytes, 'little')
         recvBytes = await self._reader.readexactly(size)
         return recvBytes
+    
+    def lookupNode(self, nodeName: str) -> list[TcpClientInfo] | None:
+        return self._clients.get(nodeName)
 
     def isConnected(self) -> bool:
         return self.connected
+    
+    def nextMessage(self) -> TcpPayload | None:
+        try:
+            payload = self._readQueue.get_nowait()
+            return payload
+        except asyncio.QueueEmpty:
+            return None

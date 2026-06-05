@@ -221,8 +221,6 @@ class Volatus:
     async def shutdown(self):
         """Stops all communication tasks managed by the Volatus framework to prepare for reloading configuration or stopping the Python app.
         """
-        if hasattr(self, '_discovery'):
-            self._discovery.shutdown()
 
         if hasattr(self, '_tcp'):
             self._tcp.shutdown()
@@ -248,20 +246,28 @@ class Volatus:
         #check if target is a targetGroup
         targetGroup = self._cluster.lookupTargetGroupId(targetName)
         return targetGroup
+    
+    def nodeIP(self, nodeName: str) -> str | None:
+        clients = self._tcp.lookupNode(nodeName)
+        if clients:
+            return clients[0].address
+        
+        return None
 
     def nodeHttpUrl(self, nodeName: str, urlPath: str) -> str | None:
         cluster = self.config.lookupClusterByName(self._node.clusterName)
         target = cluster.lookupNodeByName(nodeName)
         httpPort = target.network.httpPort
-        discovery = None
 
-        if hasattr(self, '_discovery'):
-            discovery = self._discovery.lookupNodeByName(nodeName)
-
-        if not discovery or not httpPort:
+        if not httpPort:
             return None
 
-        ip = ipaddress.ip_address(discovery.ip)
+        ipStr = self.nodeIP(nodeName)
+
+        if not ipStr:
+            return None
+        
+        ip = ipaddress.ip_address(ipStr)
         return f"http://{ip}:{httpPort}{urlPath}"
 
     async def requestLogStatus(self, nodeName: str = None) -> dict[str, LogStatus]:
@@ -269,7 +275,7 @@ class Volatus:
         nodes = cluster.nodes
 
         status: dict[str, LogStatus] = dict()
-        for nodeName, node in nodes.items():
+        for nodeName, _ in nodes.items():
             if nodeName != self.nodeName:
                 url = self.nodeHttpUrl(nodeName, "/log")
 

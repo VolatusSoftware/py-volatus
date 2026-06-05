@@ -529,7 +529,7 @@ class ConfigLoader:
 
         #hash needs to be calculated with binary mode
         with open(path, 'rb') as file:
-            hash = hashlib.file_digest(file, 'sha256').hexdigest()
+            hash = hashlib.file_digest(file, 'sha256').hexdigest().upper()
 
         with open(path, 'r', encoding='utf-8') as file:
             cfg = json.load(file)

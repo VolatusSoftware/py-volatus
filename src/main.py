@@ -26,7 +26,7 @@ async def main():
         else:
             print("No data received yet.")
 
-        gLog, hasLogData = await v.subscribe('Logging_Status', 5)
+        _, hasLogData = await v.subscribe('Logging_Status', 5)
 
         if hasLogData:
             print("Subscribed to logging status")
