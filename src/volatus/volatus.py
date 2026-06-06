@@ -25,6 +25,7 @@ from proto.start_log_pb2 import StartLog
 from proto.stop_log_pb2 import StopLog
 from proto.event_pb2 import EventLevel, Event, Events
 
+
 class LogState(Enum):
     Unknown = 0
     Idle = 1
@@ -33,7 +34,8 @@ class LogState(Enum):
     Stopping = 4
 
     def __str__(self):
-        return f'{self.name}'
+        return f"{self.name}"
+
 
 class LogStatus:
 
@@ -44,16 +46,19 @@ class LogStatus:
     def __str__(self) -> str:
         return json.dumps(self.__dict__)
 
-class VCommand:
-    """Constructed command that is ready to be sent to a Volatus system.
-    """
 
-    def __init__(self, targetName: str,
-                 type: str,
-                 payload: bytes,
-                 seqFunc: Callable[[], int],
-                 sendFunc: Callable[[str, str, bytes, int, str], None],
-                 taskName: str = ''):
+class VCommand:
+    """Constructed command that is ready to be sent to a Volatus system."""
+
+    def __init__(
+        self,
+        targetName: str,
+        type: str,
+        payload: bytes,
+        seqFunc: Callable[[], int],
+        sendFunc: Callable[[str, str, bytes, int, str], None],
+        taskName: str = "",
+    ):
         """Initializes a new command that is ready to be sent.
 
         :param targetName: The name of the target to send the command to. Can be a node name or a targetGroup name.
@@ -77,21 +82,24 @@ class VCommand:
         self._sendFunc = sendFunc
 
     def send(self):
-        """Sends the command over TCP as initialized.
-        """
-        self._sendFunc(self._targetName, self._type, self._payload, self._seqFunc(), self._taskName)
+        """Sends the command over TCP as initialized."""
+        self._sendFunc(
+            self._targetName, self._type, self._payload, self._seqFunc(), self._taskName
+        )
+
 
 class StartLogCommand(VCommand):
-    """A prepared command to start logging across a set of target nodes that can be sent with send()
-    """
+    """A prepared command to start logging across a set of target nodes that can be sent with send()"""
 
-    def __init__(self,
-                 targetName: str,
-                 testName: str,
-                 seqFunc: Callable[[], int],
-                 sendFunc: Callable[[str, str, bytes, int, str], None],
-                 startedBy: str,
-                 timestamp: str = ''):
+    def __init__(
+        self,
+        targetName: str,
+        testName: str,
+        seqFunc: Callable[[], int],
+        sendFunc: Callable[[str, str, bytes, int, str], None],
+        startedBy: str,
+        timestamp: str = "",
+    ):
         self._seqFunc = seqFunc
         self._sendFunc = sendFunc
         self._targetName = targetName
@@ -103,17 +111,30 @@ class StartLogCommand(VCommand):
 
     def send(self):
         if not self._timestamp:
-            self._timestamp = datetime.now().strftime('%Y%m%dT%H%M%S')
+            self._timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
 
         self._cmd.timestamp = self._timestamp
 
-        self._sendFunc(self._targetName, 'start_log', self._cmd.SerializeToString(), self._seqFunc(), '')
+        self._sendFunc(
+            self._targetName,
+            "start_log",
+            self._cmd.SerializeToString(),
+            self._seqFunc(),
+            "",
+        )
+
 
 class Volatus:
-    """The main API class for interacting with Volatus configs and systems.
-    """
+    """The main API class for interacting with Volatus configs and systems."""
 
-    def __init__(self, configPath: Path, systemName: str, clusterName: str, nodeName: str):
+    def __init__(
+        self,
+        configPath: Path,
+        systemName: str,
+        clusterName: str,
+        nodeName: str,
+        connectionTimeout: float = 10.0,
+    ):
         """Prepares to interact with a Volatus system with the provided configuration.
 
         The python script/app is expected to have a node entry in the specified configuration file.
@@ -148,6 +169,7 @@ class Volatus:
         self._node: NodeConfig
         self._telemetry: Telemetry
         self._tcp: TCPMessaging
+        self._connectionTimeout = connectionTimeout
 
         self._seq = 0
 
@@ -155,8 +177,8 @@ class Volatus:
 
         if systemName != cfgSystemName:
             raise ValueError(
-                f'Created config object for "{systemName}" system but config loaded is for "{cfgSystemName}".')
-
+                f'Created config object for "{systemName}" system but config loaded is for "{cfgSystemName}".'
+            )
 
         self._cluster = self.config.lookupClusterByName(clusterName)
         if self._cluster:
@@ -164,7 +186,8 @@ class Volatus:
 
         if not self._node:
             raise ValueError(
-                f'Unable to find node "{nodeName}" in cluster "{clusterName}".')
+                f'Unable to find node "{nodeName}" in cluster "{clusterName}".'
+            )
 
     async def __initFromConfig(self):
         node = self._node
@@ -183,54 +206,69 @@ class Volatus:
     def __startTCP(self):
         tcpCfg = self._node.network.tcp
 
-        self._tcp = TCPMessaging(tcpCfg.address, tcpCfg.port, tcpCfg.server, self.config, self._node)
+        self._tcp = TCPMessaging(
+            tcpCfg.address, tcpCfg.port, tcpCfg.server, self.config, self._node
+        )
         self._tcp.start()
         self._tcp.open()
 
     async def __startHTTP(self):
         self._http = FastAPI()
-        self._http.add_api_route('/config/info', self._httpConfigInfo, methods=["GET"])
+        self._http.add_api_route("/config/info", self._httpConfigInfo, methods=["GET"])
 
-        httpConfig = uvicorn.Config(self._http, host='0.0.0.0', port=self._node.network.httpPort)
+        httpConfig = uvicorn.Config(
+            self._http, host="0.0.0.0", port=self._node.network.httpPort
+        )
         self._httpServer = uvicorn.Server(httpConfig)
         self._httpTask = asyncio.create_task(self._httpServer.serve())
         await asyncio.sleep(0.5)  # give uvicorn server a chance to start
 
     def _httpConfigInfo(self):
         return {
-            'System': self.config.system.name,
-            'Cluster': self._node.clusterName,
-            'Node': self._node.name,
-            'Path': str(self.path),
-            'Version': str(self.config.version),
-            'Hash': self.config.hash.upper()
+            "System": self.config.system.name,
+            "Cluster": self._node.clusterName,
+            "Node": self._node.name,
+            "Path": str(self.path),
+            "Version": str(self.config.version),
+            "Hash": self.config.hash.upper(),
         }
 
     async def __aenter__(self):
         await self.__initFromConfig()
+
+        if self._connectionTimeout > 0:
+            await self.waitForConnection()
         return self
 
     async def __aexit__(self, type, value, traceback):
         await self.shutdown()
 
+    async def waitForConnection(self):
+        start = time.time()
+
+        while not self.isConnected() and time.time() - start < self._connectionTimeout:
+            await asyncio.sleep(0.1)
+
     def __nextSeq(self) -> int:
         seq = self._seq
         self._seq += 1
         return seq
+    
+    def isConnected(self):
+        return self._tcp.isConnected()
 
     async def shutdown(self):
-        """Stops all communication tasks managed by the Volatus framework to prepare for reloading configuration or stopping the Python app.
-        """
+        """Stops all communication tasks managed by the Volatus framework to prepare for reloading configuration or stopping the Python app."""
 
-        if hasattr(self, '_tcp'):
+        if hasattr(self, "_tcp"):
             self._tcp.shutdown()
 
-        if hasattr(self, '_telemetry'):
+        if hasattr(self, "_telemetry"):
             self._telemetry.shutdown()
 
-        if hasattr(self, '_httpServer'):
+        if hasattr(self, "_httpServer"):
             self._httpServer.should_exit = True
-            if hasattr(self, '_httpTask'):
+            if hasattr(self, "_httpTask"):
                 await self._httpTask
 
     def lookupTargetId(self, targetName: str) -> int | None:
@@ -238,20 +276,20 @@ class Volatus:
 
         Also useful for verifying if a target name is valid; unknown target names return None as the value.
         """
-        #check if target is a node
+        # check if target is a node
         node = self._cluster.lookupNodeByName(targetName)
         if node:
             return node.id
 
-        #check if target is a targetGroup
+        # check if target is a targetGroup
         targetGroup = self._cluster.lookupTargetGroupId(targetName)
         return targetGroup
-    
+
     def nodeIP(self, nodeName: str) -> str | None:
         clients = self._tcp.lookupNode(nodeName)
         if clients:
             return clients[0].address
-        
+
         return None
 
     def nodeHttpUrl(self, nodeName: str, urlPath: str) -> str | None:
@@ -266,7 +304,7 @@ class Volatus:
 
         if not ipStr:
             return None
-        
+
         ip = ipaddress.ip_address(ipStr)
         return f"http://{ip}:{httpPort}{urlPath}"
 
@@ -289,9 +327,9 @@ class Volatus:
                         except json.JSONDecodeError:
                             logStatus = dict()
 
-                stateStr = logStatus.get('State')
+                stateStr = logStatus.get("State")
                 state = LogState[stateStr]
-                log = logStatus.get('Log')
+                log = logStatus.get("Log")
 
                 status[nodeName] = LogStatus(state, log)
 
@@ -304,7 +342,7 @@ class Volatus:
             status = await self.requestLogStatus()
 
             matched = len(status) > 0
-            
+
             for nodeStatus in status.values():
                 if nodeStatus.state != state:
                     matched = False
@@ -331,17 +369,19 @@ class Volatus:
 
         return logs
 
-    async def prepareLog(self, nodeName: str, logName: str, waitUntilDone: bool = True) -> bool | None:
+    async def prepareLog(
+        self, nodeName: str, logName: str, waitUntilDone: bool = True
+    ) -> bool | None:
         logs = await self.listLogs(nodeName)
         if not logName in logs:
             return None
 
-        prepUrl = self.nodeHttpUrl(nodeName, f'/log/prepare/{logName}')
+        prepUrl = self.nodeHttpUrl(nodeName, f"/log/prepare/{logName}")
 
         if not prepUrl:
             return None
 
-        statusUrl = self.nodeHttpUrl(nodeName, f'/log/status/{logName}')
+        statusUrl = self.nodeHttpUrl(nodeName, f"/log/status/{logName}")
 
         async with aiohttp.ClientSession() as session:
             async with session.get(prepUrl) as response:
@@ -355,27 +395,30 @@ class Volatus:
                     async with session.get(statusUrl) as response:
                         status = await response.text()
 
-                        if status != 'In Progress':
+                        if status != "In Progress":
                             done = True
 
                 return True
 
         return False
 
-    async def downloadLog(self, nodeName: str, logName: str, localFolder: Path) -> Path | None:
-        downloadUrl = self.nodeHttpUrl(nodeName, f'/log/download/{logName}')
+    async def downloadLog(
+        self, nodeName: str, logName: str, localFolder: Path
+    ) -> Path | None:
+        downloadUrl = self.nodeHttpUrl(nodeName, f"/log/download/{logName}")
         async with aiohttp.ClientSession() as session:
             async with session.get(downloadUrl) as response:
                 if response.status != 200:
-                    raise aiohttp.ClientError(f'({response.status} - {await response.text()})')
+                    raise aiohttp.ClientError(
+                        f"({response.status} - {await response.text()})"
+                    )
 
-                filePath = localFolder.joinpath(f'{logName}.zip')
-                async with aiofiles.open(filePath, 'wb') as file:
+                filePath = localFolder.joinpath(f"{logName}.zip")
+                async with aiofiles.open(filePath, "wb") as file:
                     async for data, _ in response.content.iter_chunks():
                         await file.write(data)
 
                 return filePath
-
 
     def createDigitalCommand(self, chanName: str, value: bool) -> VCommand:
         """Prepares a digital command to be sent to a Volatus system.
@@ -401,7 +444,14 @@ class Volatus:
         targetName = chan.nodeName
         taskName = chan.taskName
 
-        return VCommand(targetName, 'cmd_digital', cmd.SerializeToString(), self.__nextSeq, self._tcp.sendMsg, taskName)
+        return VCommand(
+            targetName,
+            "cmd_digital",
+            cmd.SerializeToString(),
+            self.__nextSeq,
+            self._tcp.sendMsg,
+            taskName,
+        )
 
     def createAnalogCommand(self, chanName: str, value: float) -> VCommand:
         """Prepares an analog/numeric command to send to a Volatus system.
@@ -427,7 +477,14 @@ class Volatus:
         targetName = chan.nodeName
         taskName = chan.taskName
 
-        return VCommand(targetName, 'cmd_analog', cmd.SerializeToString(), self.__nextSeq, self._tcp.sendMsg, taskName)
+        return VCommand(
+            targetName,
+            "cmd_analog",
+            cmd.SerializeToString(),
+            self.__nextSeq,
+            self._tcp.sendMsg,
+            taskName,
+        )
 
     def createDigitalMultipleCommand(self, values: list[tuple[str, bool]]) -> VCommand:
         """Creates a command that can update multiple digital values simultaneously.
@@ -460,9 +517,18 @@ class Volatus:
                 taskName = chan.taskName
             else:
                 if targetName != chan.nodeName or taskName != chan.taskName:
-                    raise ValueError('Multiple command can only include channels from a single node/task.')
+                    raise ValueError(
+                        "Multiple command can only include channels from a single node/task."
+                    )
 
-        return VCommand(targetName, 'cmd_digital_multiple', cmd.SerializeToString(), self.__nextSeq(), self._tcp.sendMsg, taskName)
+        return VCommand(
+            targetName,
+            "cmd_digital_multiple",
+            cmd.SerializeToString(),
+            self.__nextSeq(),
+            self._tcp.sendMsg,
+            taskName,
+        )
 
     def createAnalogMultipleCommand(self, values: list[tuple[str, float]]) -> VCommand:
         """Prepares a command that can update multiple numeric values simultaneously
@@ -495,11 +561,22 @@ class Volatus:
                 taskName = chan.taskName
             else:
                 if targetName != chan.nodeName or taskName != chan.taskName:
-                    raise ValueError('Multiple command can only include channels from a single node/task.')
+                    raise ValueError(
+                        "Multiple command can only include channels from a single node/task."
+                    )
 
-        return VCommand(targetName, 'cmd_analog_multiple', cmd.SerializeToString(), self.__nextSeq(), self._tcp.sendMsg, taskName)
+        return VCommand(
+            targetName,
+            "cmd_analog_multiple",
+            cmd.SerializeToString(),
+            self.__nextSeq(),
+            self._tcp.sendMsg,
+            taskName,
+        )
 
-    def createStartLogCommand(self, targetName: str, testName: str, startedBy: str, timestamp: str = '') -> VCommand:
+    def createStartLogCommand(
+        self, targetName: str, testName: str, startedBy: str, timestamp: str = ""
+    ) -> VCommand:
         """Prepare a Start Log command to send to a Volatus system.
 
         :param targetName: Either the node or targetGroup to send the log command to.
@@ -520,7 +597,7 @@ class Volatus:
             self.__nextSeq,
             self._tcp.sendMsg,
             startedBy,
-            timestamp
+            timestamp,
         )
 
         return cmd
@@ -528,9 +605,17 @@ class Volatus:
     def createStopLogCommand(self, targetName: str, reason: str) -> VCommand:
         cmd = StopLog()
         cmd.reason = reason
-        return VCommand(targetName, 'stop_log', cmd.SerializeToString(), self.__nextSeq, self._tcp.sendMsg)
+        return VCommand(
+            targetName,
+            "stop_log",
+            cmd.SerializeToString(),
+            self.__nextSeq,
+            self._tcp.sendMsg,
+        )
 
-    async def subscribe(self, groupName: str, timeout_s: float = None) -> tuple[ChannelGroup, bool]:
+    async def subscribe(
+        self, groupName: str, timeout_s: float = None
+    ) -> tuple[ChannelGroup, bool]:
         """Subscribes to the telemetry data from the specified group.
 
         Groups are named collections of channels that are published together. Once subscribed, the channels within the group
@@ -546,16 +631,19 @@ class Volatus:
         :rtype: tuple[ChannelGroup, bool]
         """
 
-
         if self._telemetry:
             groupCfg = self.config.lookupGroupByName(groupName)
 
             if not groupCfg:
                 raise ValueError(f'Unknown group name "{groupName}".')
 
-            return await self._telemetry.subscribe(self._cluster.telemetry, groupCfg, timeout_s)
+            return await self._telemetry.subscribe(
+                self._cluster.telemetry, groupCfg, timeout_s
+            )
 
-        raise RuntimeError('Volatus is not configured for networking and the telemetry component is not available.')
+        raise RuntimeError(
+            "Volatus is not configured for networking and the telemetry component is not available."
+        )
 
     def unsubscribe(self, group: ChannelGroup):
         """Not implemented yet.
@@ -565,8 +653,9 @@ class Volatus:
         """
         pass
 
-    def createReportEventMsg(self, targetName: str, level: EventLevel,
-                             context: str, message: str = '') -> VCommand:
+    def createReportEventMsg(
+        self, targetName: str, level: EventLevel, context: str, message: str = ""
+    ) -> VCommand:
         event = Event()
         event.context = context
         event.message = message
@@ -575,10 +664,22 @@ class Volatus:
         msg = Events()
         msg.events.append(event)
 
-        return VCommand(targetName, 'v:Events', msg.SerializeToString(), self.__nextSeq, self._tcp.sendMsg)
+        return VCommand(
+            targetName,
+            "v:Events",
+            msg.SerializeToString(),
+            self.__nextSeq,
+            self._tcp.sendMsg,
+        )
 
-    def createReportErrorMsg(self, targetName: str, errCode: int, errMsg: str,
-                             context: str, message: str = '') -> VCommand:
+    def createReportErrorMsg(
+        self,
+        targetName: str,
+        errCode: int,
+        errMsg: str,
+        context: str,
+        message: str = "",
+    ) -> VCommand:
         event = Event()
         event.context = context
         event.message = message
@@ -590,10 +691,17 @@ class Volatus:
         msg = Events()
         msg.events.append(event)
 
-        return VCommand(targetName, 'v:Events', msg.SerializeToString(), self.__nextSeq, self._tcp.sendMsg)
+        return VCommand(
+            targetName,
+            "v:Events",
+            msg.SerializeToString(),
+            self.__nextSeq,
+            self._tcp.sendMsg,
+        )
 
-
-    def reportEvent(self, targetName: str, level: EventLevel, context: str, message: str = ''):
+    def reportEvent(
+        self, targetName: str, level: EventLevel, context: str, message: str = ""
+    ):
         event = Event()
         event.context = context
         event.message = message
@@ -602,9 +710,18 @@ class Volatus:
         msg = Events()
         msg.events.append(event)
 
-        self._tcp.sendMsg(targetName, 'v:Events', msg.SerializeToString(), self.__nextSeq())
+        self._tcp.sendMsg(
+            targetName, "v:Events", msg.SerializeToString(), self.__nextSeq()
+        )
 
-    def reportError(self, targetName: str, errCode: int, errMsg: str, context: str, message: str = ''):
+    def reportError(
+        self,
+        targetName: str,
+        errCode: int,
+        errMsg: str,
+        context: str,
+        message: str = "",
+    ):
         event = Event()
         event.context = context
         event.message = message
@@ -616,4 +733,6 @@ class Volatus:
         msg = Events()
         msg.events.append(event)
 
-        self._tcp.sendMsg(targetName, 'v:Events', msg.SerializeToString(), self.__nextSeq())
+        self._tcp.sendMsg(
+            targetName, "v:Events", msg.SerializeToString(), self.__nextSeq()
+        )

@@ -34,7 +34,7 @@ async def main():
             print("No data within timeout for logging status")
 
         # get a single channel to read live values from
-        ch0: ChannelValue = gAI.chanByName('Alpha')
+        ch0: ChannelValue = gAI.chanByName('AI00')
 
         v.reportEvent('Events', EventLevel.EVENTLEVEL_INFO, 'Test Python', 'Starting sequencing')
 
@@ -43,13 +43,13 @@ async def main():
         logging = await v.waitForLogState(LogState.Logging)
 
         if not logging:
-            print('Log unable to start, aborting')
-            exit()
+            print('Log unable to start.')
+            #exit()
 
         # turn digital output on, for scaled values (such as inverted NO valves) this will be before scaling
         # typically meaning valves are always True = Open, False = Closed
         # the create___Command methods return a VCommand object with a send() that can be called right away or sent later
-        v.createDigitalCommand('Heater_En', True).send()
+        v.createDigitalCommand('DO00', True).send()
 
         # loop ~10Hz displaying current value for the channel
         # run long enough to get some discovery packets out
@@ -58,7 +58,7 @@ async def main():
             await asyncio.sleep(0.1)
 
         # turn digital output back off
-        v.createDigitalCommand('Heater_En', False).send()
+        v.createDigitalCommand('DO00', False).send()
 
         v.reportEvent('Events', EventLevel.EVENTLEVEL_INFO, 'Test Python', 'Sequence complete')
 

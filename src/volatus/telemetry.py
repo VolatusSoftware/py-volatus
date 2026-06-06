@@ -58,8 +58,12 @@ class ChannelGroup:
     def __hash__(self) -> int:
         return hash(self.name)
 
-    def chanByName(self, chanName: str) -> ChannelValue | None:
-        return self._channel.get(chanName)
+    def chanByName(self, chanName: str) -> ChannelValue:
+        ch = self._channel.get(chanName)
+        if not ch:
+            raise RuntimeError(f"Channel {chanName} not found.")
+    
+        return ch
 
     def chanIndex(self, chanName: str) -> int | None:
         return self._chanIndex.get(chanName)
