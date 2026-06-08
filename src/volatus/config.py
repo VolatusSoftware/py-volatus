@@ -82,7 +82,7 @@ class TelemetryRouting(Enum):
     
 class TelemetryConfig:
     def __init__(self, routing: TelemetryRouting, endpt: EndpointConfig):
-        self.routing: TelemetryRouting = type
+        self.routing: TelemetryRouting = routing
         self.endpt: EndpointConfig = endpt
 
     def __eq__(self, other) -> bool:

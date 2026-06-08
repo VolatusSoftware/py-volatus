@@ -52,12 +52,11 @@ class UdpReader:
         self._protocol = None
         self._sock = None
         self._mreq = None
-        self._multicast = False
         self._lastHB = time.time()
+        self._multicast = False
         self._bindPort = 0
 
-        quad = address.split(".")
-        first = int(quad[0])
+        first = int(address.split(".")[0])
         if first >= 224 and first < 240:
             self._multicast = True
 
@@ -133,10 +132,14 @@ class UdpWriter:
         self._msg.source_id = source_id
         self._transport = None
         self._multicast = False
+        self._bindPort = 0
 
-        first = int(address.split("."))
+        first = int(address.split(".")[0])
         if first >= 224 and first < 240:
             self._multicast = True
+
+        if self._multicast:
+            self._bindPort = port
 
     async def open(self):
         loop = asyncio.get_running_loop()
@@ -146,7 +149,7 @@ class UdpWriter:
         if self._multicast:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        sock.bind((self._bind, self._port))
+        sock.bind((self._bind, self._bindPort))
         sock.setblocking(False)
 
         self._transport, _ = await loop.create_datagram_endpoint(

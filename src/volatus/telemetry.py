@@ -1,16 +1,23 @@
 import time
 import asyncio
 from enum import Enum
+from collections.abc import Callable
+from crccheck.crc import Crc32Mpeg2
 
-from .config import Cfg, GroupConfig, ChannelConfig, EndpointConfig, TelemetryConfig, TelemetryRouting
+from .config import (
+    Cfg,
+    GroupConfig,
+    ChannelConfig,
+    EndpointConfig,
+    TelemetryConfig,
+    TelemetryRouting,
+)
 from vecto.UDP import UdpReader, UdpWriter
 from proto import group_data_pb2, string_data_pb2
+from proto.group_data_pb2 import *
 
-__all__ = [
-    'Telemetry',
-    'ChannelGroup',
-    'ChannelValue'
-]
+__all__ = ["Telemetry", "ChannelGroup", "ChannelValue"]
+
 
 class ChannelValue:
     def __init__(self, chanCfg: ChannelConfig):
@@ -25,6 +32,7 @@ class ChannelValue:
         else:
             self.time_ns = time.time_ns()
 
+
 class ChannelGroup:
     def __init__(self, groupCfg: GroupConfig):
         self._channel: dict[str, ChannelValue] = dict()
@@ -36,18 +44,24 @@ class ChannelGroup:
         self._channels: list[ChannelValue] = []
         self._count = 0
 
-        #channel order is by alphabetical name
+        # channel order is by alphabetical name
         channels = dict(sorted(groupCfg.channels.items()))
 
-        i:int = 0
+        names = []
+        i: int = 0
         for chanCfg in channels.values():
             chan = ChannelValue(chanCfg)
             self._channels.append(chan)
             self._channel[chan.name] = chan
             self._chanIndex[chanCfg.name] = i
+            names.append(chan.name)
             i += 1
 
         self._count = i
+
+        nameCsv = ",".join(names)
+        nameData = nameCsv.encode()
+        self.namesCrc = Crc32Mpeg2.calc(nameData)
 
     def __eq__(self, other) -> bool:
         if isinstance(other, ChannelGroup):
@@ -62,7 +76,7 @@ class ChannelGroup:
         ch = self._channel.get(chanName)
         if not ch:
             raise RuntimeError(f"Channel {chanName} not found.")
-    
+
         return ch
 
     def chanIndex(self, chanName: str) -> int | None:
@@ -82,7 +96,7 @@ class ChannelGroup:
             raise ValueError()
 
         for i, chan in enumerate(self._channels):
-            chan.update(values[i], time_ns) #TODO check value order
+            chan.update(values[i], time_ns)  # TODO check value order
 
         self._time_ns = time_ns
 
@@ -94,12 +108,13 @@ class ChannelGroup:
         """
         vals = []
         for chan in self._channels:
-            vals.append(chan.value())
+            vals.append(chan.value)
 
         return vals, self._time_ns
 
+
 class Subscriber:
-    def __init__(self, endpt: EndpointConfig, bindAddress: str = '0.0.0.0'):
+    def __init__(self, endpt: EndpointConfig, bindAddress: str = "0.0.0.0"):
         self._endpoint = endpt
         self._pendingGroups: asyncio.Queue[ChannelGroup] = asyncio.Queue()
         self._reader = UdpReader(endpt.address, endpt.port, bindAddress)
@@ -112,7 +127,7 @@ class Subscriber:
         self._task = asyncio.create_task(self._readLoop())
 
     def addGroup(self, group: ChannelGroup):
-        #if group.config.publishConfig != self._endpoint:
+        # if group.config.publishConfig != self._endpoint:
         #    raise ValueError(f'Group {group.name} does not match subscriber endpoint of {str(self._endpoint)}')
 
         self._pendingGroups.put_nowait(group)
@@ -140,18 +155,22 @@ class Subscriber:
                     continue
 
                 match udpPayload.type:
-                    case 'v:GroupData':
+                    case "v:GroupData":
                         # numeric data
                         groupData.ParseFromString(udpPayload.payload)
                         group = self._groups.get(groupData.group_name)
                         if group:
-                            group.updateValues(groupData.scaled_data, groupData.data_timestamp)
+                            group.updateValues(
+                                groupData.scaled_data, groupData.data_timestamp
+                            )
 
-                    case 'v:StringData':
+                    case "v:StringData":
                         stringData.ParseFromString(udpPayload.payload)
                         group = self._groups.get(stringData.group_name)
                         if group:
-                            group.updateValues(stringData.strings, stringData.data_timestamp)
+                            group.updateValues(
+                                stringData.strings, stringData.data_timestamp
+                            )
 
             except TimeoutError:
                 pass
@@ -159,17 +178,52 @@ class Subscriber:
         self._reader.close()
 
 
+class GroupPublisher:
+    def __init__(
+        self,
+        group: ChannelGroup,
+        endpt: EndpointConfig,
+        writer: UdpWriter,
+        seqFunc: Callable[[], int],
+    ):
+        self.group = group
+        self._endpt = endpt
+        self._writer = writer
+        self._seqFunc: Callable[[], int] = seqFunc
+
+    def publish(self):
+        values, time_ns = self.group.allValues()
+        msg = GroupData()
+        msg.data_timestamp = time_ns
+        msg.group_name = self.group.name
+        msg.names_crc = self.group.namesCrc
+        msg.scaled_data.extend(values)
+        self._writer.sendPayload(
+            msg.SerializeToString(), "v:GroupData", self._seqFunc()
+        )
+
+
 class Telemetry:
-    def __init__(self):
+    def __init__(
+        self,
+        telemCfg: TelemetryConfig,
+        nodeId: int,
+        bindAddress: str,
+        seqFunc: Callable[[], int],
+    ):
         self._values = dict()
         self._subscribers: dict[EndpointConfig, Subscriber] = dict()
-        self._groups = dict()
+        self._subGroups = dict()
+        self._telemCfg = telemCfg
+        self._nodeId = nodeId
+        self._bindAddress = bindAddress
+        self._pubGroups: dict[str, GroupPublisher] = dict()
+        self._writers: dict[EndpointConfig, UdpWriter] = dict()
+        self._seqFunc: Callable[[], int] = seqFunc
 
-    async def subscribe(self, 
-                            telemConfig: TelemetryConfig,
-                            groupCfg: GroupConfig,
-                            timeout_s: float = None,
-                            bindAddress: str = '0.0.0.0') -> tuple[ChannelGroup, bool]:
+    async def subscribe(
+        self, groupCfg: GroupConfig, timeout_s: float = None
+    ) -> tuple[ChannelGroup, bool]:
         """Subscribes to a group based on its configuration.
 
         :param groupCfg: The configuration of the group to subscribe to. Must include publish configuration.
@@ -181,36 +235,38 @@ class Telemetry:
         :rtype: tuple[ChannelGroup, bool]
         """
         # check to see if group already exists
-        group = self._groups.get(groupCfg.name)
+        group = self._subGroups.get(groupCfg.name)
         if not group:
-            endpt = telemConfig.endpt
+            endpt = self._telemCfg.endpt
 
-            if telemConfig.routing == TelemetryRouting.Multicast:
+            if self._telemCfg.routing == TelemetryRouting.Multicast:
                 endpt = groupCfg.publishConfig
 
             group = ChannelGroup(groupCfg)
-            self._groups[group.name] = group
+            self._subGroups[group.name] = group
 
             if not endpt:
-                raise ValueError(f'No valid telemetry config for Group {groupCfg.name()} and it cannot be subscribed to. Ensure a Unicast telemetry config is provided or a group publish config.')
+                raise ValueError(
+                    f"No valid telemetry config for Group {groupCfg.name()} and it cannot be subscribed to. Ensure a Unicast telemetry config is provided or a group publish config."
+                )
 
             if endpt in self._subscribers:
                 sub = self._subscribers[endpt]
                 sub.addGroup(group)
             else:
-                sub = Subscriber(endpt, bindAddress)
+                sub = Subscriber(endpt, self._bindAddress)
                 self._subscribers[endpt] = sub
                 sub.addGroup(group)
                 await sub.start()
 
-        #get first channel to check for data
+        # get first channel to check for data
         chan = group.chanByIndex(0)
         hasData = chan.time_ns > 0
 
         if timeout_s is not None and not hasData:
             start = time.time()
 
-            #chan.time_ns is updated asynchronously via the udp read loop
+            # chan.time_ns is updated asynchronously via the udp read loop
             while time.time() - start < timeout_s and chan.time_ns == 0:
                 await asyncio.sleep(0.01)
 
@@ -218,6 +274,48 @@ class Telemetry:
 
         return (group, hasData)
 
+    async def registerForPublish(self, groupCfg: GroupConfig) -> ChannelGroup:
+        """Given a GroupConfig instance, prepares for the publishing of that group and returns the group to be published.
+
+        :param groupCfg: The configuration object describing the group to publish.
+        :type groupCfg: ChannelConfig
+        :return: The live data group that holds updated values before publishing.
+        :rtype: ChannelGroup
+        """
+
+        # Check if group is already registered and return early if it exists
+        pubGroup = self._pubGroups.get(groupCfg.name)
+        if pubGroup != None:
+            return pubGroup.group
+
+        group = ChannelGroup(groupCfg)
+        endpt = groupCfg.publishConfig
+
+        if self._telemCfg.routing == TelemetryRouting.Unicast:
+            endpt = self._telemCfg.endpt
+
+        writer = self._writers.get(endpt)
+        if not writer:
+            if self._telemCfg.routing == TelemetryRouting.Unicast:
+                writer = UdpWriter(endpt.address, endpt.port, self._nodeId, self._bindAddress)
+            await writer.open()
+
+        pubGroup = GroupPublisher(group, endpt, writer, self._seqFunc)
+        self._pubGroups[group.name] = pubGroup
+
+        return group
+
+    def publish(self, group: ChannelGroup):
+        pubGroup = self._pubGroups.get(group.name)
+
+        if not pubGroup:
+            raise RuntimeError(f'Cannot publish group "{group.name}". Either the group was not registered for publishing or it was created incorrectly.')
+        
+        pubGroup.publish()
+
     def shutdown(self):
         for sub in self._subscribers.values():
             sub.close()
+        
+        for pub in self._writers.values():
+            pub.close()

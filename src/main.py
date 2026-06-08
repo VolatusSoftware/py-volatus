@@ -36,6 +36,13 @@ async def main():
         # get a single channel to read live values from
         ch0: ChannelValue = gAI.chanByName('AI00')
 
+        # register published python group and initialize with starting data
+        pyGroup = await v.registerForPublish("PythonData")
+        
+        pyVals = [3.1, 3.2, 3.3]
+        pyGroup.updateValues(pyVals)
+        v.publish(pyGroup)
+
         v.reportEvent('Events', EventLevel.EVENTLEVEL_INFO, 'Test Python', 'Starting sequencing')
 
         v.createStartLogCommand('Logging', 'testy', 'python').send()
@@ -54,6 +61,10 @@ async def main():
         # loop ~10Hz displaying current value for the channel
         # run long enough to get some discovery packets out
         for i in range(20):
+            pyVals[0] += 1.0
+            pyGroup.updateValues(pyVals)
+            v.publish(pyGroup)
+
             print(ch0.value)
             await asyncio.sleep(0.1)
 

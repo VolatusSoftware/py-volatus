@@ -17,7 +17,13 @@ import aiohttp
 import aiofiles
 
 from volatus.telemetry import Telemetry, ChannelGroup
-from volatus.config import VolatusConfig, NodeConfig, ConfigLoader, ClusterConfig
+from volatus.config import (
+    VolatusConfig,
+    NodeConfig,
+    ConfigLoader,
+    ClusterConfig,
+    GroupConfig,
+)
 from vecto.TCP import TCPMessaging
 from proto.cmd_digital_pb2 import CmdDigital, CmdDigitalMultiple
 from proto.cmd_analog_pb2 import CmdAnalog, CmdAnalogMultiple
@@ -201,7 +207,12 @@ class Volatus:
         self.__createTelemetry()
 
     def __createTelemetry(self):
-        self._telemetry = Telemetry()
+        self._telemetry = Telemetry(
+            self._cluster.telemetry,
+            self._node.id,
+            self._node.network.bindAddress,
+            self.__nextSeq,
+        )
 
     def __startTCP(self):
         tcpCfg = self._node.network.tcp
@@ -253,7 +264,7 @@ class Volatus:
         seq = self._seq
         self._seq += 1
         return seq
-    
+
     def isConnected(self):
         return self._tcp.isConnected()
 
@@ -613,6 +624,17 @@ class Volatus:
             self._tcp.sendMsg,
         )
 
+    async def registerForPublish(self, groupName: str) -> ChannelGroup:
+        if not self._telemetry:
+            raise RuntimeError("Telemetry is not configured.")
+
+        groupCfg = self.config.lookupGroupByName(groupName)
+
+        if not groupCfg:
+            raise ValueError(f'Unknown group name "{groupName}".')
+
+        return await self._telemetry.registerForPublish(groupCfg)
+
     async def subscribe(
         self, groupName: str, timeout_s: float = None
     ) -> tuple[ChannelGroup, bool]:
@@ -637,13 +659,24 @@ class Volatus:
             if not groupCfg:
                 raise ValueError(f'Unknown group name "{groupName}".')
 
-            return await self._telemetry.subscribe(
-                self._cluster.telemetry, groupCfg, timeout_s
-            )
+            return await self._telemetry.subscribe(groupCfg, timeout_s)
 
         raise RuntimeError(
             "Volatus is not configured for networking and the telemetry component is not available."
         )
+
+    def publish(self, group: ChannelGroup):
+        """Publishes current values for a group as telemetry.
+
+        :param group: The channel group to publish.
+        :type group: ChannelGroup
+        """
+        if not self._telemetry:
+            raise RuntimeError(
+                "Volatus has not been configured with Telemetry capabilities."
+            )
+
+        self._telemetry.publish(group)
 
     def unsubscribe(self, group: ChannelGroup):
         """Not implemented yet.
