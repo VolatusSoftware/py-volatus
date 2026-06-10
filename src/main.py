@@ -12,6 +12,8 @@ cfgPath = Cfg.normalizePath('c:/dev/lv20ce/relink/lv-volatus/VolatusScratch/daqt
 # meaningless to Volatus but is reported on TCP connection for visibility in GUIs
 APP_VERSION = "0.1.0"
 
+# Handles dispatched messages for the "cmd_digital" message.
+# 'msg' is not used here but could be used for replying, sending another message, etc.
 async def cmdTest(payload: TcpPayload, msg: TCPMessaging):
     #registered for cmd_digital messages, parse embedded msg format
     cmd = CmdDigital.FromString(payload.payload)
