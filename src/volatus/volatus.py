@@ -24,12 +24,13 @@ from volatus.config import (
     ClusterConfig,
     GroupConfig,
 )
-from vecto.TCP import TCPMessaging
+from vecto.TCP import TCPMessaging, MessageHandler
 from proto.cmd_digital_pb2 import CmdDigital, CmdDigitalMultiple
 from proto.cmd_analog_pb2 import CmdAnalog, CmdAnalogMultiple
 from proto.start_log_pb2 import StartLog
 from proto.stop_log_pb2 import StopLog
 from proto.event_pb2 import EventLevel, Event, Events
+from proto.tcp_payload_pb2 import *
 
 
 class LogState(Enum):
@@ -61,7 +62,6 @@ class VCommand:
         targetName: str,
         type: str,
         payload: bytes,
-        seqFunc: Callable[[], int],
         sendFunc: Callable[[str, str, bytes, int, str], None],
         taskName: str = "",
     ):
@@ -73,8 +73,6 @@ class VCommand:
         :type type: str
         :param payload: The serialized protobuf message used as the command data.
         :type payload: bytes
-        :param seqFunc: A reference to the function used to generate the next sequence number sent in the message header.
-        :type seqFunc: Callable[[], int]
         :param sendFunc: A reference to the function that sends the message out over TCP. Expected to be the send function of the TCP class.
         :type sendFunc: Callable[[str, str, bytes, int, str], None]
         :param taskName: The target task for the command, defaults to '' which requires tasks to be subscribed to the specific message type.
@@ -83,15 +81,12 @@ class VCommand:
         self._targetName = targetName
         self._type = type
         self._payload = payload
-        self._seqFunc = seqFunc
         self._taskName = taskName
         self._sendFunc = sendFunc
 
     def send(self):
         """Sends the command over TCP as initialized."""
-        self._sendFunc(
-            self._targetName, self._type, self._payload, self._seqFunc(), self._taskName
-        )
+        self._sendFunc(self._targetName, self._type, self._payload, self._taskName)
 
 
 class StartLogCommand(VCommand):
@@ -101,12 +96,10 @@ class StartLogCommand(VCommand):
         self,
         targetName: str,
         testName: str,
-        seqFunc: Callable[[], int],
         sendFunc: Callable[[str, str, bytes, int, str], None],
         startedBy: str,
         timestamp: str = "",
     ):
-        self._seqFunc = seqFunc
         self._sendFunc = sendFunc
         self._targetName = targetName
         self._timestamp = timestamp
@@ -125,7 +118,6 @@ class StartLogCommand(VCommand):
             self._targetName,
             "start_log",
             self._cmd.SerializeToString(),
-            self._seqFunc(),
             "",
         )
 
@@ -139,6 +131,7 @@ class Volatus:
         systemName: str,
         clusterName: str,
         nodeName: str,
+        appVersion: str = "",
         connectionTimeout: float = 10.0,
     ):
         """Prepares to interact with a Volatus system with the provided configuration.
@@ -170,6 +163,8 @@ class Volatus:
         """The configuration from the configPath argument."""
 
         self.path: Path = configPath
+
+        self.appVersion = appVersion
 
         self._cluster: ClusterConfig
         self._node: NodeConfig
@@ -218,10 +213,24 @@ class Volatus:
         tcpCfg = self._node.network.tcp
 
         self._tcp = TCPMessaging(
-            tcpCfg.address, tcpCfg.port, tcpCfg.server, self.config, self._node
+            tcpCfg.address,
+            tcpCfg.port,
+            tcpCfg.server,
+            self.config,
+            self._node,
+            self.__nextSeq,
+            self.appVersion,
         )
         self._tcp.start()
         self._tcp.open()
+
+    def registerMessageHandler(
+        self, msgType: str, taskID: str, handler: MessageHandler
+    ):
+        if not self._tcp:
+            raise RuntimeError("Messaging is not configured.")
+
+        self._tcp.register(handler, msgType, taskID)
 
     async def __startHTTP(self):
         self._http = FastAPI()
@@ -338,9 +347,13 @@ class Volatus:
                         except json.JSONDecodeError:
                             logStatus = dict()
 
+                state = LogState.Unknown
+                log = ""
+
                 stateStr = logStatus.get("State")
-                state = LogState[stateStr]
-                log = logStatus.get("Log")
+                if stateStr:
+                    state = LogState[stateStr]
+                    log = logStatus.get("Log")
 
                 status[nodeName] = LogStatus(state, log)
 
@@ -459,7 +472,6 @@ class Volatus:
             targetName,
             "cmd_digital",
             cmd.SerializeToString(),
-            self.__nextSeq,
             self._tcp.sendMsg,
             taskName,
         )
@@ -492,7 +504,6 @@ class Volatus:
             targetName,
             "cmd_analog",
             cmd.SerializeToString(),
-            self.__nextSeq,
             self._tcp.sendMsg,
             taskName,
         )
@@ -536,7 +547,6 @@ class Volatus:
             targetName,
             "cmd_digital_multiple",
             cmd.SerializeToString(),
-            self.__nextSeq(),
             self._tcp.sendMsg,
             taskName,
         )
@@ -580,7 +590,6 @@ class Volatus:
             targetName,
             "cmd_analog_multiple",
             cmd.SerializeToString(),
-            self.__nextSeq(),
             self._tcp.sendMsg,
             taskName,
         )
@@ -605,7 +614,6 @@ class Volatus:
         cmd = StartLogCommand(
             targetName,
             testName,
-            self.__nextSeq,
             self._tcp.sendMsg,
             startedBy,
             timestamp,
@@ -620,7 +628,6 @@ class Volatus:
             targetName,
             "stop_log",
             cmd.SerializeToString(),
-            self.__nextSeq,
             self._tcp.sendMsg,
         )
 
@@ -701,7 +708,6 @@ class Volatus:
             targetName,
             "v:Events",
             msg.SerializeToString(),
-            self.__nextSeq,
             self._tcp.sendMsg,
         )
 
@@ -728,7 +734,6 @@ class Volatus:
             targetName,
             "v:Events",
             msg.SerializeToString(),
-            self.__nextSeq,
             self._tcp.sendMsg,
         )
 
@@ -743,9 +748,7 @@ class Volatus:
         msg = Events()
         msg.events.append(event)
 
-        self._tcp.sendMsg(
-            targetName, "v:Events", msg.SerializeToString(), self.__nextSeq()
-        )
+        self._tcp.sendMsg(targetName, "v:Events", msg.SerializeToString())
 
     def reportError(
         self,
@@ -766,6 +769,4 @@ class Volatus:
         msg = Events()
         msg.events.append(event)
 
-        self._tcp.sendMsg(
-            targetName, "v:Events", msg.SerializeToString(), self.__nextSeq()
-        )
+        self._tcp.sendMsg(targetName, "v:Events", msg.SerializeToString())

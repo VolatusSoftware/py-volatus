@@ -2,16 +2,19 @@ import time
 import asyncio
 import socket
 from enum import Enum
+from collections.abc import Callable, Awaitable
 
 from volatus.config import VolatusConfig, NodeConfig
 
 from proto.tcp_payload_pb2 import *
+from proto.tcp_reply_pb2 import *
 from proto.tcp_client_hello_pb2 import *
 from proto.tcp_server_hello_pb2 import *
 from proto.tcp_client_list_pb2 import *
 
 __all__ = [
-    'TCPMessaging'
+    'TCPMessaging',
+    'MessageHandler'
 ]
 
 class ClientState(Enum):
@@ -50,8 +53,26 @@ class ClientInfo:
     def __init__(self, address: tuple[str, int]):
         self.address = address
 
+type MessageHandler = Callable[[TcpPayload, "TCPMessaging"], Awaitable[None]]
+
+class MessageHandlers:
+    def __init__(self, msgType: str):
+        self.type = msgType
+
+        # str = taskID
+        self._handlers: dict[str, MessageHandler] = dict()
+
+    def addHandler(self, taskID: str, handler: MessageHandler):
+        self._handlers[taskID] = handler
+
+    async def dispatch(self, payload: TcpPayload, msg: "TCPMessaging"):
+        handler = self._handlers.get(payload.task_id)
+
+        if handler:
+            await handler(payload, msg)
+
 class TCPMessaging:
-    def __init__(self, address: str, port: int, server: bool, vCfg: VolatusConfig, nodeCfg: NodeConfig):
+    def __init__(self, address: str, port: int, server: bool, vCfg: VolatusConfig, nodeCfg: NodeConfig, seqFunc: Callable[[], int], appVersion: str):
         self.address = address
         self.port = port
         self.server = server
@@ -59,6 +80,7 @@ class TCPMessaging:
         self.vCfg = vCfg
         self.nodeCfg = nodeCfg
         self.connected = False
+        self.appVersion = appVersion
 
         self.id = nodeCfg.id
 
@@ -70,6 +92,11 @@ class TCPMessaging:
         self._task: asyncio.Task = None
         self._reader: asyncio.StreamReader = None
         self._writer: asyncio.StreamWriter = None
+
+        self._seqFunc = seqFunc
+
+        # msgType, Handlers
+        self._handlers: dict[str, MessageHandlers] = dict()
 
         if self.server:
             raise ValueError('Server mode is not implemented in Python yet.')
@@ -86,7 +113,24 @@ class TCPMessaging:
     def shutdown(self):
         self._actionQ.put_nowait(TCPAction.SHUTDOWN)
 
-    def sendMsg(self, target: str | int, msgType: str, payload: bytes, sequence: int, task: str = '') -> int:
+    def register(self, handler: MessageHandler, msgType: str, taskID: str):
+        handlers = self._handlers.get(msgType)
+
+        if not handlers:
+            handlers = MessageHandlers(msgType)
+            self._handlers[msgType] = handlers
+
+        handlers.addHandler(taskID, handler)
+
+    def replyMsg(self, original: TcpPayload, msgType: str, payload: bytes) -> int:
+        reply = TcpReply()
+        reply.payload = payload
+        reply.request_sequence = original.sequence
+        reply.request_timestamp = original.timestamp
+
+        self.sendMsg(original.source_id, "v:TcpReply", reply.SerializeToString())
+
+    def sendMsg(self, target: str | int, msgType: str, payload: bytes, task: str = '') -> int:
         targetId: int
         if type(target) == int:
             targetId = target
@@ -102,13 +146,17 @@ class TCPMessaging:
             toSend = TcpPayload()
             toSend.target_node = targetId
             toSend.source_id = self.id
-            toSend.sequence = sequence
             toSend.type = msgType
             toSend.task_id = task
             toSend.payload = payload
             self._sendQueue.put_nowait(toSend)
 
         return self._sendQueue.qsize()
+    
+    async def _dispatch(self, payload: TcpPayload):
+        handler = self._handlers.get(payload.type)
+        if handler:
+            await handler.dispatch(payload, self)
 
     async def _clientLoop(self):
         clientHello = TcpClientHello()
@@ -119,6 +167,7 @@ class TCPMessaging:
         clientHello.config_version = str(self.vCfg.version)
         clientHello.node_alias = socket.gethostname()
         clientHello.config_hash = self.vCfg.hash
+        clientHello.app_version = self.appVersion
         helloPayload = clientHello.SerializeToString()
 
         state = ClientState.IDLE
@@ -186,6 +235,7 @@ class TCPMessaging:
                 while not self._sendQueue.empty():
                     payload = self._sendQueue.get_nowait()
                     payload.timestamp = time.time_ns()
+                    payload.sequence = self._seqFunc()
 
                     try:
                         await self.__sendSized(payload.SerializeToString())
@@ -222,7 +272,7 @@ class TCPMessaging:
                                 self._clients = clientDict
                                 break
                     else:
-                        self._readQueue.put_nowait(readPayload)
+                        await self._dispatch(readPayload)
 
             if state == ClientState.CLOSING:
                 if self._writer:
