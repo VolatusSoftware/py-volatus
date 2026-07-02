@@ -1,7 +1,7 @@
-from volatus.config import Cfg
+from volatus.config import Cfg, VL_Type
 from volatus.volatus import Volatus, EventLevel, LogState, TcpPayload, TCPMessaging
 from volatus.telemetry import ChannelGroup, ChannelValue
-from proto.cmd_digital_pb2 import *
+from volatus.proto.cmd_digital_pb2 import *
 
 import asyncio
 
@@ -24,9 +24,12 @@ async def main():
     # create the top level Volatus object. The Volatus class handles config loading
     # and initializing the components as configured. With the Context Manager support
     # the initialized volatus object is automatically shutdown at the end of the with block.
-    async with Volatus(cfgPath, 'TestSystem', 'TestCluster', 'PyScript', APP_VERSION) as v:
+    async with Volatus(cfgPath, 'TestSystem', 'TestCluster', 'PyScript', APP_VERSION, 10) as v:
 
         v.registerMessageHandler("cmd_digital", "PythonTest", cmdTest)
+
+        tasks = Cfg.vlFindType(v.config, VL_Type.VL_Task, False)
+        print(f"Found {len(tasks)} tasks.")
 
         gAI: ChannelGroup
         hasData: bool

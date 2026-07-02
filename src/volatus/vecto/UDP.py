@@ -3,7 +3,7 @@ import struct
 import time
 import asyncio
 
-from proto.udp_payload_pb2 import *
+from ..proto.udp_payload_pb2 import *
 from .util import resolveAddress
 
 __all__ = ["UdpReader", "UdpWriter"]

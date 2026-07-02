@@ -6,11 +6,11 @@ from collections.abc import Callable, Awaitable
 
 from volatus.config import VolatusConfig, NodeConfig
 
-from proto.tcp_payload_pb2 import *
-from proto.tcp_reply_pb2 import *
-from proto.tcp_client_hello_pb2 import *
-from proto.tcp_server_hello_pb2 import *
-from proto.tcp_client_list_pb2 import *
+from ..proto.tcp_payload_pb2 import *
+from ..proto.tcp_reply_pb2 import *
+from ..proto.tcp_client_hello_pb2 import *
+from ..proto.tcp_server_hello_pb2 import *
+from ..proto.tcp_client_list_pb2 import *
 
 __all__ = [
     'TCPMessaging',

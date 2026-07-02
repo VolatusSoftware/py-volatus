@@ -1,4 +1,4 @@
-from vecto.util import ipType, resolveAddress
+from volatus.vecto.util import ipType, resolveAddress
 
 def main():
     ip1 = '127.0.0.1'

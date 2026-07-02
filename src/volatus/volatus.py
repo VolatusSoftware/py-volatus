@@ -24,13 +24,13 @@ from volatus.config import (
     ClusterConfig,
     GroupConfig,
 )
-from vecto.TCP import TCPMessaging, MessageHandler
-from proto.cmd_digital_pb2 import CmdDigital, CmdDigitalMultiple
-from proto.cmd_analog_pb2 import CmdAnalog, CmdAnalogMultiple
-from proto.start_log_pb2 import StartLog
-from proto.stop_log_pb2 import StopLog
-from proto.event_pb2 import EventLevel, Event, Events
-from proto.tcp_payload_pb2 import *
+from volatus.vecto.TCP import TCPMessaging, MessageHandler
+from volatus.proto.cmd_digital_pb2 import CmdDigital, CmdDigitalMultiple
+from volatus.proto.cmd_analog_pb2 import CmdAnalog, CmdAnalogMultiple
+from volatus.proto.start_log_pb2 import StartLog
+from volatus.proto.stop_log_pb2 import StopLog
+from volatus.proto.event_pb2 import EventLevel, Event, Events
+from volatus.proto.tcp_payload_pb2 import *
 
 
 class LogState(Enum):
@@ -114,12 +114,14 @@ class StartLogCommand(VCommand):
 
         self._cmd.timestamp = self._timestamp
 
-        self._sendFunc(
+        count = self._sendFunc(
             self._targetName,
             "start_log",
             self._cmd.SerializeToString(),
             "",
         )
+
+        print(f"Send Q size: {count}")
 
 
 class Volatus:
@@ -242,6 +244,9 @@ class Volatus:
         self._httpServer = uvicorn.Server(httpConfig)
         self._httpTask = asyncio.create_task(self._httpServer.serve())
         await asyncio.sleep(0.5)  # give uvicorn server a chance to start
+
+    def addHttpRouter(self, router: APIRouter):
+        return self._http.include_router(router)
 
     def _httpConfigInfo(self):
         return {

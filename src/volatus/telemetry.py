@@ -4,6 +4,8 @@ from enum import Enum
 from collections.abc import Callable
 from crccheck.crc import Crc32Mpeg2
 
+from volatus.proto import group_data_pb2
+
 from .config import (
     Cfg,
     GroupConfig,
@@ -12,9 +14,9 @@ from .config import (
     TelemetryConfig,
     TelemetryRouting,
 )
-from vecto.UDP import UdpReader, UdpWriter
-from proto import group_data_pb2, string_data_pb2
-from proto.group_data_pb2 import *
+from volatus.vecto.UDP import UdpReader, UdpWriter
+from volatus.proto import string_data_pb2
+from volatus.proto.group_data_pb2 import *
 
 __all__ = ["Telemetry", "ChannelGroup", "ChannelValue"]
 
