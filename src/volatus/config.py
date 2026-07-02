@@ -4,6 +4,9 @@ import json
 import queue
 import os
 import hashlib
+from typing import Optional
+
+from pydantic import BaseModel, ValidationError
 
 
 class VL_Type(Enum):
@@ -130,6 +133,9 @@ class ConfigElementBase:
             return self.val.get("Value")
         
         return self.val
+    
+    def loadModel[T: BaseModel](self, model_cls: type[T]) -> T:
+        return model_cls(**self.val)
 
 
 class ChannelConfig(ConfigElementBase):
@@ -549,7 +555,7 @@ class VolatusConfig(ConfigElementBase):
 
     def lookupTaskByName(
         self, taskName: str, nodeName: str, clusterName: str = None
-    ) -> TaskConfig | None:
+    ) -> TaskConfig:
         node = self.lookupNodeByName(nodeName, clusterName)
         if node:
             return node.lookupTaskByName(taskName)

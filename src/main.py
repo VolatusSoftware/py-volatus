@@ -2,6 +2,7 @@ from volatus.config import Cfg, VL_Type
 from volatus.volatus import Volatus, EventLevel, LogState, TcpPayload, TCPMessaging
 from volatus.telemetry import ChannelGroup, ChannelValue
 from volatus.proto.cmd_digital_pb2 import *
+from pydantic import BaseModel, ValidationError
 
 import asyncio
 
@@ -11,6 +12,10 @@ cfgPath = Cfg.normalizePath('c:/dev/lv20ce/relink/lv-volatus/VolatusScratch/daqt
 
 # meaningless to Volatus but is reported on TCP connection for visibility in GUIs
 APP_VERSION = "0.1.0"
+
+class PythonTestModel (BaseModel):
+    CustomValue: float
+    StringVal: str
 
 # Handles dispatched messages for the "cmd_digital" message.
 # 'msg' is not used here but could be used for replying, sending another message, etc.
@@ -34,6 +39,9 @@ async def main():
         taskCfg = v.config.lookupTaskByName('PythonTest', 'PyScript')
         val = taskCfg.lookupChildByName('CustomValue')
         print(f"CustomValue: {val.value()}")
+
+        mCfg = taskCfg.loadModel(PythonTestModel)
+        print(f"StringVal from model: {mCfg.StringVal}")
 
         gAI: ChannelGroup
         hasData: bool
