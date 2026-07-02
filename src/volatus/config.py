@@ -104,26 +104,32 @@ class TelemetryConfig:
 
 
 class ConfigElementBase:
-    def __init__(self, cfg):
-        self._cfg = cfg
-        self._hasChildren = isinstance(cfg, dict)
+    def __init__(self, val):
+        self.val = val
+        self._hasChildren = isinstance(val, dict)
 
     def lookupChildByName(self, childName: str) -> 'ConfigElementBase':
         if self._hasChildren:
-            child = self._cfg.get(childName)
+            child = self.val.get(childName)
 
             if not child:
                 return None
 
-            return ConfigElementBase(self._cfg.get(childName))
+            return ConfigElementBase(child)
 
         return None
-
-    def cfg(self) -> dict | None:
-        if self._hasChildren:
-            return self._cfg
-
+    
+    def lookupMetaValue(self, metaName: str):
+        if isinstance(self.val, dict):
+            return Cfg.readMetaValue(self.val, metaName)
+        
         return None
+    
+    def value(self):
+        if isinstance(self.val, dict):
+            return self.val.get("Value")
+        
+        return self.val
 
 
 class ChannelConfig(ConfigElementBase):
@@ -585,7 +591,7 @@ class VolatusConfig(ConfigElementBase):
 
 def cfgObj(obj: dict | ConfigElementBase) -> dict:
     if isinstance(obj, ConfigElementBase):
-        return obj.cfg()
+        return obj.val
 
     return obj
 

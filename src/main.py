@@ -31,6 +31,10 @@ async def main():
         tasks = Cfg.vlFindType(v.config, VL_Type.VL_Task, False)
         print(f"Found {len(tasks)} tasks.")
 
+        taskCfg = v.config.lookupTaskByName('PythonTest', 'PyScript')
+        val = taskCfg.lookupChildByName('CustomValue')
+        print(f"CustomValue: {val.value()}")
+
         gAI: ChannelGroup
         hasData: bool
 
