@@ -4,7 +4,7 @@ import json
 import queue
 import os
 import hashlib
-from typing import Optional
+from typing import Optional, Self
 
 from pydantic import BaseModel, ValidationError
 
@@ -107,8 +107,9 @@ class TelemetryConfig:
 
 
 class ConfigElementBase:
-    def __init__(self, val):
+    def __init__(self, name: str, val: int | bool | str | float):
         self.val = val
+        self.name = name
         self._hasChildren = isinstance(val, dict)
 
     def lookupChildByName(self, childName: str) -> 'ConfigElementBase':
@@ -118,7 +119,7 @@ class ConfigElementBase:
             if not child:
                 return None
 
-            return ConfigElementBase(child)
+            return ConfigElementBase(childName, child)
 
         return None
     
@@ -134,9 +135,19 @@ class ConfigElementBase:
         
         return self.val
     
-    def loadModel[T: BaseModel](self, model_cls: type[T]) -> T:
-        return model_cls(**self.val)
+    def loadModel[T: BaseModel](self, model_cls: type[T], validate: bool = True) -> T:
+        if validate:
+            return model_cls(**self.val)
+        else:
+            return model_cls.model_construct(**self.val)
+        
+    def children(self) -> list[Self]:
+        c: list[Self] = []
+        c_dict = Cfg.childrenOf(self)
+        for name, child in c_dict.items():
+            c.append(ConfigElementBase(name, child))
 
+        return c
 
 class ChannelConfig(ConfigElementBase):
     def __init__(
@@ -159,7 +170,7 @@ class ChannelConfig(ConfigElementBase):
         self.nodeName = nodeName
         self._clusterName = clusterName
 
-        super().__init__(cfgObj)
+        super().__init__(name, cfgObj)
 
     def clusterName(self) -> str:
         return self._clusterName
@@ -186,7 +197,7 @@ class GroupConfig(ConfigElementBase):
         self.nodeName = nodeName
         self.clusterName = clusterName
 
-        super().__init__(cfgObj)
+        super().__init__(name, cfgObj)
 
         for channel in channels:
             self.channels[channel.name] = channel
@@ -222,7 +233,7 @@ class TaskConfig(ConfigElementBase):
         self.nodeName = nodeName
         self.clusterName = clusterName
 
-        super().__init__(cfgObj)
+        super().__init__(name, cfgObj)
 
         for group in groups:
             self.groups[group.name] = group
@@ -280,7 +291,7 @@ class NodeConfig(ConfigElementBase):
         self.tasks: dict[str, TaskConfig] = dict()
         self.clusterName = clusterName
 
-        super().__init__(cfgObj)
+        super().__init__(name, cfgObj)
 
         for task in tasks:
             self.tasks[task.name] = task
@@ -317,7 +328,7 @@ class ClusterConfig(ConfigElementBase):
         self.targetGroups = targetGroups
         self.nodes: dict[str, NodeConfig] = dict()
 
-        super().__init__(cfgObj)
+        super().__init__(name, cfgObj)
 
         if nodes:
             for node in nodes:
@@ -341,7 +352,7 @@ class SystemConfig(ConfigElementBase):
         self.name = name
         self.clusters: dict[str, ClusterConfig] = dict()
 
-        super().__init__(cfgObj)
+        super().__init__(name, cfgObj)
 
         for cluster in clusters:
             self.clusters[cluster.name] = cluster
@@ -485,7 +496,7 @@ class VolatusConfig(ConfigElementBase):
         self.groups: dict[str, TaskLookup] = dict()
         self.channels: dict[str, GroupLookup] = dict()
 
-        super().__init__(cfgObj)
+        super().__init__('Volatus', cfgObj)
 
         self.refreshLookups()
 

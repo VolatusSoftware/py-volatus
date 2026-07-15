@@ -178,6 +178,8 @@ class TCPMessaging:
 
         readPayload = TcpPayload()
 
+        can_send = False
+
         while not shutdown:
             # check actionQ for commands
             while not self._actionQ.empty():
@@ -220,7 +222,12 @@ class TCPMessaging:
                     if serverPayload:
                         serverHello = TcpServerHello()
                         serverHello.ParseFromString(serverPayload)
-                        if serverHello.status == ConnectStatus.STATUS_SUCCESS:
+
+                        can_send = serverHello.status == ConnectStatus.STATUS_SUCCESS
+                        connected = serverHello.status == ConnectStatus.STATUS_SUCCESS or serverHello.status == ConnectStatus.STATUS_BAD_CONFIG
+
+
+                        if connected:
                             state = ClientState.CONNECTED
                             self.state = str(state)
                         else:
@@ -228,21 +235,23 @@ class TCPMessaging:
                                 f'Connection error {serverHello.status} from server, aborting.'
                             )
                 except Exception as e:
+                    print(f"Connection error: {e}")
                     await asyncio.sleep(0.5)
 
             if state == ClientState.CONNECTED:
                 # check for messages to send
                 while not self._sendQueue.empty():
                     payload = self._sendQueue.get_nowait()
-                    payload.timestamp = time.time_ns()
-                    payload.sequence = self._seqFunc()
 
-                    try:
-                        await self.__sendSized(payload.SerializeToString())
-                    except Exception:
-                        state = ClientState.CLOSING
-                        self.state = str(state)
-                        break
+                    if can_send:
+                        payload.timestamp = time.time_ns()
+                        payload.sequence = self._seqFunc()
+                        try:
+                            await self.__sendSized(payload.SerializeToString())
+                        except Exception:
+                            state = ClientState.CLOSING
+                            self.state = str(state)
+                            break
 
                 # check for receieved messages
                 while True:

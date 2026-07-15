@@ -49,6 +49,9 @@ async def main():
         # subscribe to a known group we're interested in reading published data from
         gAI, hasData = await v.subscribe('TestAI', 2)
 
+        vals, _ = gAI.allValues()
+        print(vals)
+
         if hasData:
             print("Data valid within timeout.")
         else:

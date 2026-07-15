@@ -28,7 +28,16 @@ class ChannelValue:
         self.time_ns = 0
 
     def update(self, value, timestamp: int):
-        self.value = value
+        match value:
+            case str():
+                pass #string source not supported at the moment, ignore
+            case bool():
+                self.value = float(value)
+            case int():
+                self.value = float(value)
+            case float():
+                self.value = value
+                
         if timestamp:
             self.time_ns = timestamp
         else:
@@ -100,19 +109,20 @@ class ChannelGroup:
         for i, chan in enumerate(self._channels):
             chan.update(values[i], time_ns)  # TODO check value order
 
-        self._time_ns = time_ns
+        self.time_ns = time_ns
 
-    def allValues(self) -> tuple[list[str | float], int]:
+    def allValues(self) -> tuple[list[str | float | None], int]:
         """
         Returns the current values stored by the group of channels
 
         Return: tuple[values: list[str | float | None], time_ns: int]
         """
-        vals = []
-        for chan in self._channels:
-            vals.append(chan.value)
+        vals = [chan.value for chan in self._channels]
 
-        return vals, self._time_ns
+        return (vals, self.time_ns)
+
+    def values(self) -> list[str | float | None]:
+        return [chan.value for chan in self._channels]
 
 
 class Subscriber:

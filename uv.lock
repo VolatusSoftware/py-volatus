@@ -302,7 +302,7 @@ wheels = [
 
 [[package]]
 name = "ig-volatus"
-version = "2.1.0"
+version = "2.3.3"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
