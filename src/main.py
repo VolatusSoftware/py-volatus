@@ -3,12 +3,13 @@ from volatus.volatus import Volatus, EventLevel, LogState, TcpPayload, TCPMessag
 from volatus.telemetry import ChannelGroup, ChannelValue
 from volatus.proto.cmd_digital_pb2 import *
 from pydantic import BaseModel, ValidationError
+import numpy as np
 
 import asyncio
 
 # provide a "cleaner" path format that doesn't trip up on escape sequences.
 # this is the same format used for paths in vjson files.
-cfgPath = Cfg.normalizePath('c:/dev/lv20ce/relink/lv-volatus/VolatusScratch/daqtest.vjson')
+cfgPath = Cfg.normalizePath('/home/dbomm/dev/volatus/labview/lv-volatus/VolatusScratch/daqtest.vjson')
 
 # meaningless to Volatus but is reported on TCP connection for visibility in GUIs
 APP_VERSION = "0.1.0"
@@ -25,6 +26,27 @@ async def cmdTest(payload: TcpPayload, msg: TCPMessaging):
 
     print(f"Setting {cmd.channel} to {cmd.value}")
 
+def simple_sum_calc(inputs: dict[str, float]) -> dict[str, float]:
+    return {
+        "sum_calc": inputs["sum_a"] + inputs["sum_b"],
+    }
+
+avg_n: float = 0.0
+avg_i = 0
+avg_nums = np.zeros(100, dtype=np.float64)
+
+def avg_calc(inputs: dict[str, float]) -> dict[str, float]:
+    avg_nums[avg_i] = inputs["avg_input"]
+    avg_i = avg_i + 1 if avg_i < 99 else 0
+
+    if avg_n < 100:
+        avg_n += 1
+
+    return {
+        "avg_calc": avg_nums.sum() / avg_n
+    }
+
+
 async def main():
     # create the top level Volatus object. The Volatus class handles config loading
     # and initializing the components as configured. With the Context Manager support
@@ -32,6 +54,9 @@ async def main():
     async with Volatus(cfgPath, 'TestSystem', 'TestCluster', 'PyScript', APP_VERSION, 10) as v:
 
         v.registerMessageHandler("cmd_digital", "PythonTest", cmdTest)
+
+        v.add_calc(["sum_a", "sum_b"], ["sum_calc"], simple_sum_calc)
+        v.add_calc(["avg_input"], ["avg_calc"], avg_calc)
 
         tasks = Cfg.vlFindType(v.config, VL_Type.VL_Task, False)
         print(f"Found {len(tasks)} tasks.")

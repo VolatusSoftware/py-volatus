@@ -596,6 +596,13 @@ class VolatusConfig(ConfigElementBase):
 
         return None
 
+    def group_name_for_channel(self, chan_name: str) -> str:
+        gl = self.channels.get(chan_name)
+        if gl:
+            return gl.groupName
+        else:
+            return ""
+
     def lookupChannelByName(self, channelName: str) -> ChannelConfig | None:
         gl = self.channels.get(channelName)
         if gl:

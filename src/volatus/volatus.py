@@ -5,6 +5,7 @@ from collections.abc import Callable
 from datetime import datetime
 from fastapi import FastAPI, APIRouter
 from enum import Enum
+from typing import final
 
 import uvicorn
 import os
@@ -16,13 +17,14 @@ import asyncio
 import aiohttp
 import aiofiles
 
-from volatus.telemetry import Telemetry, ChannelGroup
+from volatus.telemetry import Telemetry, ChannelGroup, ChannelValue
 from volatus.config import (
     VolatusConfig,
     NodeConfig,
     ConfigLoader,
     ClusterConfig,
     GroupConfig,
+    TaskConfig,
 )
 from volatus.vecto.TCP import TCPMessaging, MessageHandler
 from volatus.proto.cmd_digital_pb2 import CmdDigital, CmdDigitalMultiple
@@ -32,6 +34,105 @@ from volatus.proto.stop_log_pb2 import StopLog
 from volatus.proto.event_pb2 import EventLevel, Event, Events
 from volatus.proto.tcp_payload_pb2 import *
 
+class Module:
+    @final
+    def __init__(self, task_config: TaskConfig, v: "Volatus"):
+        self.v = v
+        self.task_config = task_config
+        self.name = task_config.name
+        self._created_groups: dict[str, ChannelGroup] = {}
+
+        self.module_init()
+
+    def module_init(self):
+        raise NotImplementedError
+
+    async def module_loop(self):
+        raise NotImplementedError
+
+    def report_event(self, msg: str, level: EventLevel = EventLevel.EVENTLEVEL_INFO):
+        self.v.reportEvent("Events", level, self.name, msg)
+
+    def report_error(self, msg: str, err_code: int = 1, err_detail: str = ""):
+        self.v.reportError("Events", err_code, err_detail, self.name, msg)
+
+    def register_message_handler(self, msg_type: str, handler: MessageHandler):
+        self.v.registerMessageHandler(msg_type, self.name, handler)
+
+    async def create_group(self, group_name: str, timeout: float = None) -> ChannelGroup:
+        if group_name in self.task_config.groups:
+            # own group, return group created for publishing
+            return await self.v.registerForPublish(group_name)
+        else:
+            return await self.v.subscribe(group_name, timeout)
+
+type CalcMethod = Callable[[dict[str, float]], dict[str, float]]
+
+class Calc:
+    def __init__(self, inputs: list[ChannelValue], outputs: list[ChannelValue], method: CalcMethod):
+        self.inputs = {c.name: c for c in inputs}
+        self.outputs = {c.name: c for c in outputs}
+        self.input_vals = {name: 0.0 for name, _ in inputs.items()}
+
+        self.method = method
+
+    def do_calc(self):
+        for name, channel in self.inputs.items():
+            self.input_vals[name] = channel.value
+
+        vals = self.method(self.input_vals)
+        for name, value in vals.items():
+            self.outputs[name].value = value
+
+
+class CalcsModule(Module):
+    input_channels: dict[str, ChannelValue] = {} # All channels used for 
+    input_groups: dict[str, ChannelGroup] = {} # Doesn't need to be manually updated or published
+    output_groups: dict[str, ChannelGroup] = {} # Groups that get published each iteration
+
+    calcs: list[Calc] = []
+
+    period: float = 0.1 # Delay between each calculations iteration
+
+    def module_init(self):
+        cfg_period = self.task_config.lookupChildByName("period_ms")
+        if cfg_period:
+            self.period = cfg_period.value()
+
+    async def module_loop(self):
+        while True:
+            await asyncio.sleep(self.period)
+            for calc in self.calcs:
+                calc.do_calc()
+
+            for _, g in self.output_groups:
+                self.v.publish(g)
+        
+
+    async def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
+        input_chans: list[ChannelValue] = []
+        output_chans: list[ChannelValue] = []
+
+        for chan_name in inputs:
+            if chan_name not in self.input_channels:
+                group_name = self.v.config.group_name_for_channel(chan_name)
+                if group_name:
+                    if group_name not in self.input_groups:
+                        self.input_groups[group_name] = await self.create_group(group_name)
+
+                self.input_channels[chan_name] = self.input_groups[group_name].chanByName(chan_name)
+
+            input_chans.append(self.input_channels[chan_name])
+
+        for chan_name in outputs:
+            group_name = self.v.config.group_name_for_channel(chan_name)
+            if group_name:
+                if group_name not in self.output_groups:
+                    # output groups are always for publish
+                    self.output_groups[group_name] = await self.v.registerForPublish(group_name)
+            output_chans.append(self.output_groups[group_name].chanByName(chan_name))
+
+        self.calcs.append(Calc(input_chans, output_chans, method))
 
 class LogState(Enum):
     Unknown = 0
@@ -174,6 +275,9 @@ class Volatus:
         self._tcp: TCPMessaging
         self._connectionTimeout = connectionTimeout
 
+        self._calcs: CalcsModule = None
+        self._calcs_task: asyncio.Task = None
+
         self._seq = 0
 
         cfgSystemName = self.config.system.name
@@ -191,6 +295,14 @@ class Volatus:
             raise ValueError(
                 f'Unable to find node "{nodeName}" in cluster "{clusterName}".'
             )
+
+    def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
+        if not self._calcs:
+            self._calcs = CalcsModule(None, self)
+            self._calcs_task = asyncio.create_task(self._calcs.module_loop())
+
+        self._calcs.add_calc(inputs, outputs, method)
+
 
     async def __initFromConfig(self):
         node = self._node
