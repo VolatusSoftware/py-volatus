@@ -72,7 +72,7 @@ class Calc:
     def __init__(self, inputs: list[ChannelValue], outputs: list[ChannelValue], method: CalcMethod):
         self.inputs = {c.name: c for c in inputs}
         self.outputs = {c.name: c for c in outputs}
-        self.input_vals = {name: 0.0 for name, _ in inputs.items()}
+        self.input_vals = {name: 0.0 for name in inputs}
 
         self.method = method
 
@@ -105,7 +105,8 @@ class CalcsModule(Module):
             for calc in self.calcs:
                 calc.do_calc()
 
-            for _, g in self.output_groups:
+            for _, g in self.output_groups.items():
+                g.time_ns = time.time_ns()
                 self.v.publish(g)
         
 
@@ -118,7 +119,7 @@ class CalcsModule(Module):
                 group_name = self.v.config.group_name_for_channel(chan_name)
                 if group_name:
                     if group_name not in self.input_groups:
-                        self.input_groups[group_name] = await self.create_group(group_name)
+                        self.input_groups[group_name], _ = await self.create_group(group_name)
 
                 self.input_channels[chan_name] = self.input_groups[group_name].chanByName(chan_name)
 
@@ -275,6 +276,8 @@ class Volatus:
         self._tcp: TCPMessaging
         self._connectionTimeout = connectionTimeout
 
+        self._tasks: list[asyncio.Task] = []
+
         self._calcs: CalcsModule = None
         self._calcs_task: asyncio.Task = None
 
@@ -296,12 +299,14 @@ class Volatus:
                 f'Unable to find node "{nodeName}" in cluster "{clusterName}".'
             )
 
-    def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
+    async def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
         if not self._calcs:
-            self._calcs = CalcsModule(None, self)
-            self._calcs_task = asyncio.create_task(self._calcs.module_loop())
+            task_cfg = TaskConfig("Calcs", "PythonCalcs", self.nodeName, self.clusterName, {})
+            self._node.addTask(task_cfg)
+            self._calcs = CalcsModule(task_cfg, self)
+            self._tasks.append(asyncio.create_task(self._calcs.module_loop()))
 
-        self._calcs.add_calc(inputs, outputs, method)
+        await self._calcs.add_calc(inputs, outputs, method)
 
 
     async def __initFromConfig(self):
@@ -391,11 +396,24 @@ class Volatus:
         self._seq += 1
         return seq
 
+    def start_task_by_name[T: Module](self, task_name: str, task_cls: type[T]) -> T:
+        cfg = self.config.lookupTaskByName(task_name, self.nodeName, self.clusterName)
+        if cfg:
+            task: Module = task_cls(cfg, self)
+            self._tasks.append(asyncio.create_task(task.module_loop()))
+            return task
+
+        raise RuntimeError(f"Config not found for task '{task_name}'.")
+
+
     def isConnected(self):
         return self._tcp.isConnected()
 
     async def shutdown(self):
         """Stops all communication tasks managed by the Volatus framework to prepare for reloading configuration or stopping the Python app."""
+
+        for task in self._tasks:
+            task.cancel()
 
         if hasattr(self, "_tcp"):
             self._tcp.shutdown()
