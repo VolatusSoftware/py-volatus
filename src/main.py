@@ -3,13 +3,14 @@ from volatus.volatus import Volatus, EventLevel, LogState, TcpPayload, TCPMessag
 from volatus.telemetry import ChannelGroup, ChannelValue
 from volatus.proto.cmd_digital_pb2 import *
 from pydantic import BaseModel, ValidationError
+from pathlib import Path
 import numpy as np
 
 import asyncio
 
 # provide a "cleaner" path format that doesn't trip up on escape sequences.
 # this is the same format used for paths in vjson files.
-cfgPath = Cfg.normalizePath('/home/dbomm/dev/volatus/labview/lv-volatus/VolatusScratch/daqtest.vjson')
+INI_PATH = Path('volatus.ini')
 
 # meaningless to Volatus but is reported on TCP connection for visibility in GUIs
 APP_VERSION = "0.1.0"
@@ -51,7 +52,7 @@ async def main():
     # create the top level Volatus object. The Volatus class handles config loading
     # and initializing the components as configured. With the Context Manager support
     # the initialized volatus object is automatically shutdown at the end of the with block.
-    async with Volatus(cfgPath, 'TestSystem', 'TestCluster', 'PyScript', APP_VERSION, 10) as v:
+    async with Volatus.from_ini(INI_PATH, APP_VERSION, 10) as v:
 
         v.registerMessageHandler("cmd_digital", "PythonTest", cmdTest)
 

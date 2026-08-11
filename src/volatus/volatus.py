@@ -16,6 +16,7 @@ import time
 import asyncio
 import aiohttp
 import aiofiles
+import configparser
 
 from volatus.telemetry import Telemetry, ChannelGroup, ChannelValue
 from volatus.config import (
@@ -36,10 +37,14 @@ from volatus.proto.tcp_payload_pb2 import *
 
 class Module:
     @final
-    def __init__(self, task_config: TaskConfig, v: "Volatus"):
+    def __init__(self, task_config: TaskConfig, v: "Volatus", name: str = None):
         self.v = v
         self.task_config = task_config
-        self.name = task_config.name
+        if name:
+            self.name = name
+        else:
+            self.name = task_config.name
+
         self._created_groups: dict[str, ChannelGroup] = {}
 
         self.module_init()
@@ -72,7 +77,7 @@ class Calc:
     def __init__(self, inputs: list[ChannelValue], outputs: list[ChannelValue], method: CalcMethod):
         self.inputs = {c.name: c for c in inputs}
         self.outputs = {c.name: c for c in outputs}
-        self.input_vals = {name: 0.0 for name, _ in inputs.items()}
+        self.input_vals = {name: 0.0 for name in inputs}
 
         self.method = method
 
@@ -105,7 +110,7 @@ class CalcsModule(Module):
             for calc in self.calcs:
                 calc.do_calc()
 
-            for _, g in self.output_groups:
+            for _, g in self.output_groups.items():
                 self.v.publish(g)
         
 
@@ -118,7 +123,7 @@ class CalcsModule(Module):
                 group_name = self.v.config.group_name_for_channel(chan_name)
                 if group_name:
                     if group_name not in self.input_groups:
-                        self.input_groups[group_name] = await self.create_group(group_name)
+                        self.input_groups[group_name], _= await self.create_group(group_name)
 
                 self.input_channels[chan_name] = self.input_groups[group_name].chanByName(chan_name)
 
@@ -296,12 +301,43 @@ class Volatus:
                 f'Unable to find node "{nodeName}" in cluster "{clusterName}".'
             )
 
-    def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
-        if not self._calcs:
-            self._calcs = CalcsModule(None, self)
-            self._calcs_task = asyncio.create_task(self._calcs.module_loop())
+    @staticmethod
+    def from_ini(
+        ini_path: Path | str = 'volatus.ini',
+        app_version: str = '0.0.0',
+        connect_timeout: float = 10.0,
+    ) -> "Volatus":
+        ini = configparser.ConfigParser()
+        ini.read(ini_path)
+        v_ini = ini['Volatus']
 
-        self._calcs.add_calc(inputs, outputs, method)
+        system_name = v_ini['System']
+        cluster_name = v_ini['Cluster']
+        node_name = v_ini['Node']
+        cfg_path = Path(v_ini['Config'])
+
+        if not cfg_path.is_absolute():
+            cfg_path = (ini_path.parent / cfg_path).resolve()
+
+        return Volatus(cfg_path, system_name, cluster_name, node_name, app_version, connect_timeout)
+
+    @staticmethod
+    def main(async_main):
+        asyncio.run(async_main())
+
+    async def init_calcs(self, task_name: str):
+        if self._calcs:
+            raise RuntimeError("Calcs are already initialized.")
+
+        task_cfg = self.config.lookupTaskByName(task_name, self.nodeName, self.clusterName)
+        self._calcs = CalcsModule(task_cfg, self)
+        self._calcs_task = asyncio.create_task(self._calcs.module_loop())
+
+    async def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
+        if not self._calcs:
+            raise RuntimeError("Calcs must be initialized with init_calcs() first.")
+        
+        await self._calcs.add_calc(inputs, outputs, method)
 
 
     async def __initFromConfig(self):
@@ -345,6 +381,9 @@ class Volatus:
             raise RuntimeError("Messaging is not configured.")
 
         self._tcp.register(handler, msgType, taskID)
+
+    async def wait_terminate(self):
+        await asyncio.Event().wait()
 
     async def __startHTTP(self):
         self._http = FastAPI()

@@ -250,6 +250,7 @@ class TaskConfig(ConfigElementBase):
         return self.groups.get(groupName)
 
 
+import asyncio
 class TCPConfig:
     def __init__(self, address: str, port: int, server: bool):
         self.address = address
