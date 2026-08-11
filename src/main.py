@@ -32,19 +32,15 @@ def simple_sum_calc(inputs: dict[str, float]) -> dict[str, float]:
         "sum_calc": inputs["sum_a"] + inputs["sum_b"],
     }
 
-avg_n: float = 0.0
-avg_i = 0
-avg_nums = np.zeros(100, dtype=np.float64)
-
+avg_nums: list[float] = []
 def avg_calc(inputs: dict[str, float]) -> dict[str, float]:
-    avg_nums[avg_i] = inputs["avg_input"]
-    avg_i = avg_i + 1 if avg_i < 99 else 0
+    avg_nums.append(inputs["avg_input"])
 
-    if avg_n < 100:
-        avg_n += 1
+    if len(avg_nums) > 100:
+        avg_nums.pop(0)
 
     return {
-        "avg_calc": avg_nums.sum() / avg_n
+        "avg_calc": sum(avg_nums) / len(avg_nums)
     }
 
 
@@ -54,10 +50,10 @@ async def main():
     # the initialized volatus object is automatically shutdown at the end of the with block.
     async with Volatus.from_ini(INI_PATH, APP_VERSION, 10) as v:
 
-        v.registerMessageHandler("cmd_digital", "PythonTest", cmdTest)
+        await v.add_calc(["sum_a", "sum_b"], ["sum_calc"], simple_sum_calc)
+        await v.add_calc(["avg_input"], ["avg_calc"], avg_calc)
 
-        v.add_calc(["sum_a", "sum_b"], ["sum_calc"], simple_sum_calc)
-        v.add_calc(["avg_input"], ["avg_calc"], avg_calc)
+        v.registerMessageHandler("cmd_digital", "PythonTest", cmdTest)
 
         tasks = Cfg.vlFindType(v.config, VL_Type.VL_Task, False)
         print(f"Found {len(tasks)} tasks.")
@@ -141,6 +137,8 @@ async def main():
         # this helps make sure the command has had time to make it through the async
         # tasks and actually get out to the targets."?:"
         await v.waitForLogState(LogState.Idle)
+
+        await asyncio.sleep(10)
 
 if __name__ == '__main__':
     asyncio.run(main())

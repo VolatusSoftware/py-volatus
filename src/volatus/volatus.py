@@ -111,6 +111,7 @@ class CalcsModule(Module):
                 calc.do_calc()
 
             for _, g in self.output_groups.items():
+                g.time_ns = time.time_ns()
                 self.v.publish(g)
         
 
@@ -280,6 +281,8 @@ class Volatus:
         self._tcp: TCPMessaging
         self._connectionTimeout = connectionTimeout
 
+        self._tasks: list[asyncio.Task] = []
+
         self._calcs: CalcsModule = None
         self._calcs_task: asyncio.Task = None
 
@@ -430,11 +433,24 @@ class Volatus:
         self._seq += 1
         return seq
 
+    def start_task_by_name[T: Module](self, task_name: str, task_cls: type[T]) -> T:
+        cfg = self.config.lookupTaskByName(task_name, self.nodeName, self.clusterName)
+        if cfg:
+            task: Module = task_cls(cfg, self)
+            self._tasks.append(asyncio.create_task(task.module_loop()))
+            return task
+
+        raise RuntimeError(f"Config not found for task '{task_name}'.")
+
+
     def isConnected(self):
         return self._tcp.isConnected()
 
     async def shutdown(self):
         """Stops all communication tasks managed by the Volatus framework to prepare for reloading configuration or stopping the Python app."""
+
+        for task in self._tasks:
+            task.cancel()
 
         if hasattr(self, "_tcp"):
             self._tcp.shutdown()
