@@ -317,12 +317,16 @@ class Telemetry:
 
         return group
 
-    def publish(self, group: ChannelGroup):
+    def publish(self, group: ChannelGroup, set_time: bool = True):
+
         pubGroup = self._pubGroups.get(group.name)
 
         if not pubGroup:
             raise RuntimeError(f'Cannot publish group "{group.name}". Either the group was not registered for publishing or it was created incorrectly.')
         
+        if set_time:
+            group.time_ns = time.time_ns()
+            
         pubGroup.publish()
 
     def shutdown(self):
