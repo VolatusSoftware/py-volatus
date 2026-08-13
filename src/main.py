@@ -50,6 +50,7 @@ async def main():
     # the initialized volatus object is automatically shutdown at the end of the with block.
     async with Volatus.from_ini(INI_PATH, APP_VERSION, 10) as v:
 
+        await v.init_calcs("PyCalcs")
         await v.add_calc(["sum_a", "sum_b"], ["sum_calc"], simple_sum_calc)
         await v.add_calc(["avg_input"], ["avg_calc"], avg_calc)
 

@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi import FastAPI, APIRouter
 from enum import Enum
 from typing import final
+from abc import ABC, abstractmethod
 
 import uvicorn
 import os
@@ -49,10 +50,17 @@ class Module:
 
         self.module_init()
 
-    def module_init(self):
+    @abstractmethod
+    def module_init(self) -> None:
         raise NotImplementedError
 
+    @abstractmethod
     async def module_loop(self):
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def module_type() -> str:
         raise NotImplementedError
 
     def report_event(self, msg: str, level: EventLevel = EventLevel.EVENTLEVEL_INFO):
@@ -69,76 +77,19 @@ class Module:
             # own group, return group created for publishing
             return await self.v.registerForPublish(group_name)
         else:
-            return await self.v.subscribe(group_name, timeout)
+            return await self.v.subscribe(group_name, timeout)[0]
 
-type CalcMethod = Callable[[dict[str, float]], dict[str, float]]
+_module_types: dict[str, Module] = {}
+"""Stores registered module types for automatically launching modules from vjson config."""
 
-class Calc:
-    def __init__(self, inputs: list[ChannelValue], outputs: list[ChannelValue], method: CalcMethod):
-        self.inputs = {c.name: c for c in inputs}
-        self.outputs = {c.name: c for c in outputs}
-        self.input_vals = {name: 0.0 for name in inputs}
+def register_module(mod_cls):
+    mod_type = mod_cls.module_type()
+    _module_types[mod_type] = mod_cls
 
-        self.method = method
+    print(f"Registering module type '{mod_type}' for class '{mod_cls.__name__}'.")
 
-    def do_calc(self):
-        for name, channel in self.inputs.items():
-            self.input_vals[name] = channel.value
-
-        vals = self.method(self.input_vals)
-        for name, value in vals.items():
-            self.outputs[name].value = value
-
-
-class CalcsModule(Module):
-    input_channels: dict[str, ChannelValue] = {} # All channels used for 
-    input_groups: dict[str, ChannelGroup] = {} # Doesn't need to be manually updated or published
-    output_groups: dict[str, ChannelGroup] = {} # Groups that get published each iteration
-
-    calcs: list[Calc] = []
-
-    period: float = 0.1 # Delay between each calculations iteration
-
-    def module_init(self):
-        cfg_period = self.task_config.lookupChildByName("period_ms")
-        if cfg_period:
-            self.period = cfg_period.value()
-
-    async def module_loop(self):
-        while True:
-            await asyncio.sleep(self.period)
-            for calc in self.calcs:
-                calc.do_calc()
-
-            for _, g in self.output_groups.items():
-                g.time_ns = time.time_ns()
-                self.v.publish(g)
-        
-
-    async def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
-        input_chans: list[ChannelValue] = []
-        output_chans: list[ChannelValue] = []
-
-        for chan_name in inputs:
-            if chan_name not in self.input_channels:
-                group_name = self.v.config.group_name_for_channel(chan_name)
-                if group_name:
-                    if group_name not in self.input_groups:
-                        self.input_groups[group_name], _= await self.create_group(group_name)
-
-                self.input_channels[chan_name] = self.input_groups[group_name].chanByName(chan_name)
-
-            input_chans.append(self.input_channels[chan_name])
-
-        for chan_name in outputs:
-            group_name = self.v.config.group_name_for_channel(chan_name)
-            if group_name:
-                if group_name not in self.output_groups:
-                    # output groups are always for publish
-                    self.output_groups[group_name] = await self.v.registerForPublish(group_name)
-            output_chans.append(self.output_groups[group_name].chanByName(chan_name))
-
-        self.calcs.append(Calc(input_chans, output_chans, method))
+def lookup_module_type(type: str) -> type[Module]:
+    return _module_types.get(type)
 
 class LogState(Enum):
     Unknown = 0
@@ -281,10 +232,7 @@ class Volatus:
         self._tcp: TCPMessaging
         self._connectionTimeout = connectionTimeout
 
-        self._tasks: list[asyncio.Task] = []
-
-        self._calcs: CalcsModule = None
-        self._calcs_task: asyncio.Task = None
+        self._tasks: dict[str, asyncio.Task] = {}
 
         self._seq = 0
 
@@ -320,6 +268,9 @@ class Volatus:
         cfg_path = Path(v_ini['Config'])
 
         if not cfg_path.is_absolute():
+            if isinstance(ini_path, str):
+                ini_path = Path(ini_path)
+
             cfg_path = (ini_path.parent / cfg_path).resolve()
 
         return Volatus(cfg_path, system_name, cluster_name, node_name, app_version, connect_timeout)
@@ -328,19 +279,19 @@ class Volatus:
     def main(async_main):
         asyncio.run(async_main())
 
-    async def init_calcs(self, task_name: str):
-        if self._calcs:
-            raise RuntimeError("Calcs are already initialized.")
+    # async def init_calcs(self, task_name: str):
+    #     if self._calcs:
+    #         raise RuntimeError("Calcs are already initialized.")
 
-        task_cfg = self.config.lookupTaskByName(task_name, self.nodeName, self.clusterName)
-        self._calcs = CalcsModule(task_cfg, self)
-        self._calcs_task = asyncio.create_task(self._calcs.module_loop())
+    #     task_cfg = self.config.lookupTaskByName(task_name, self.nodeName, self.clusterName)
+    #     self._calcs = CalcsModule(task_cfg, self)
+    #     self._calcs_task = asyncio.create_task(self._calcs.module_loop())
 
-    async def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
-        if not self._calcs:
-            raise RuntimeError("Calcs must be initialized with init_calcs() first.")
+    # async def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
+    #     if not self._calcs:
+    #         raise RuntimeError("Calcs must be initialized with init_calcs() first.")
         
-        await self._calcs.add_calc(inputs, outputs, method)
+    #     await self._calcs.add_calc(inputs, outputs, method)
 
 
     async def __initFromConfig(self):
@@ -417,10 +368,36 @@ class Volatus:
 
         if self._connectionTimeout > 0:
             await self.waitForConnection()
+
+        await self.launch_configured_tasks()
+
         return self
 
     async def __aexit__(self, type, value, traceback):
         await self.shutdown()
+
+    async def launch_configured_tasks(self):
+        for name, task_cfg in self._node.tasks.items():
+            task_type = task_cfg.lookupMetaValue("VL_Task_Type")
+            if task_type:
+                mod_cls = lookup_module_type(task_type)
+                if not mod_cls:
+                    print(f"Unknown task type '{task_type}' for task '{name}', ignoring.")
+                    continue
+
+                module = mod_cls(task_cfg, self, name)
+                try:
+                    print(f"Initializing task '{name}' as '{task_type}'.")
+                    module.module_init()
+                except Exception as e:
+                    print(f"Task init failed for '{name}': {e}")
+                    continue
+
+                mod_task = asyncio.create_task(module.module_loop())
+
+                self._tasks[name] = mod_task
+
+                print(f"Task '{name}' launched.")
 
     async def waitForConnection(self):
         start = time.time()
@@ -433,15 +410,6 @@ class Volatus:
         self._seq += 1
         return seq
 
-    def start_task_by_name[T: Module](self, task_name: str, task_cls: type[T]) -> T:
-        cfg = self.config.lookupTaskByName(task_name, self.nodeName, self.clusterName)
-        if cfg:
-            task: Module = task_cls(cfg, self)
-            self._tasks.append(asyncio.create_task(task.module_loop()))
-            return task
-
-        raise RuntimeError(f"Config not found for task '{task_name}'.")
-
 
     def isConnected(self):
         return self._tcp.isConnected()
@@ -449,7 +417,7 @@ class Volatus:
     async def shutdown(self):
         """Stops all communication tasks managed by the Volatus framework to prepare for reloading configuration or stopping the Python app."""
 
-        for task in self._tasks:
+        for _, task in self._tasks.items():
             task.cancel()
 
         if hasattr(self, "_tcp"):
