@@ -1,12 +1,16 @@
+"""
+Provides CalcsModule functionality. Automatically registers the CalcsModule implementation
+with the Volatus framework so that a task type of "PyCalcs" can be launched automatically
+when specified in a vjson file.
+
+Also provides stateful calculation helpers such as RunningAvg
+"""
 from .telemetry import ChannelGroup, ChannelValue
 from .volatus import Module, register_module
 
 from collections.abc import Callable
 from types import CodeType
-from typing import Any
-from enum import Enum
 import asyncio
-import time
 import re
 
 type CalcMethod = Callable[[dict[str, float]], float]
@@ -27,6 +31,16 @@ class RunningAvg:
             self._avg -= self._vals.pop(0)
 
         return self._avg
+
+class EmaFilter:
+    def __init__(self, alpha: float):
+        self._a = alpha
+        self._b = 1 - alpha
+        self._val = 0
+
+    def calc(self, val: float) -> float:
+        self._val = self._a * val + self._b * self._val
+        return self._val
 
 def avg(*args) -> float:
     return sum(args) / len(args)
@@ -61,11 +75,18 @@ class Calc:
 
     def _create_fn(self, fn_name: str, args: list[str]) -> str | None:
         match fn_name:
-            case 'avg_run':
+            case 'run_avg':
                 avg = RunningAvg(int(args[1]))
                 f_num = len(self.fn)
                 name = f"f{f_num}"
                 self.fn[name] = avg.add
+                return f"self.fn['{name}']({args[0]})"
+
+            case 'ema':
+                ema = EmaFilter(float(args[1]))
+                f_num = len(self.fn)
+                name = f"f{f_num}"
+                self.fn[name] = ema.calc
                 return f"self.fn['{name}']({args[0]})"
 
             case _:
@@ -119,7 +140,28 @@ class Calc:
         val = self.method(self.input_vals)
         self.output.value = val
 
+class CalcConfig:
+    def __init__(self, output: str, expression: str = None, method: CalcMethod = None, inputs: list[str] = []):
+        self.output = output
+        self.expression = expression
+        self.method = method
+        self.inputs = inputs
 
+    @staticmethod
+    def as_expression(output: str, expression: str) -> "CalcConfig":
+        return CalcConfig(
+            output=output,
+            expression=expression,
+        )
+
+    @staticmethod
+    def as_method(output: str, method: CalcMethod, inputs: list[str] = []) -> "CalcConfig":
+        return CalcConfig(
+            output=output,
+            method=method,
+            inputs=inputs
+        )
+    
 class CalcsModule(Module):
     input_channels: dict[str, ChannelValue] = {} # All channels used for 
     input_groups: dict[str, ChannelGroup] = {} # Doesn't need to be manually updated or published
@@ -138,27 +180,38 @@ class CalcsModule(Module):
         if cfg_period:
             self.period = cfg_period.value()
 
+
+        self._reg_q: asyncio.Queue[CalcConfig] = asyncio.Queue()
+
     async def module_loop(self):
-        await self.load_calcs()
+        await self._load_calcs()
 
         while True:
+            while not self._reg_q.empty():
+                cfg = self._reg_q.get_nowait()
+                if cfg.expression:
+                    await self.add_calc_expression(cfg.output, cfg.expression)
+                elif cfg.method:
+                    await self.add_calc_method(cfg.output, cfg.method, cfg.inputs)
+
             await asyncio.sleep(self.period)
             for calc in self.calcs:
                 calc.do_calc()
 
             for _, g in self.output_groups.items():
-                g.time_ns = time.time_ns()
                 self.v.publish(g)
         
-
-    async def load_calcs(self):
+    async def _load_calcs(self):
         for _, group in self.task_config.groups.items():
             for ch_name, channel in group.channels.items():
                 expression = channel.lookupChildByName("Expression")
                 if expression:
-                    await self.parse_expression(ch_name, expression.value())
+                    await self.add_calc_expression(ch_name, expression.value())
 
-    async def parse_expression(self, chan_name: str, expression: str):
+    async def add_calc_expression(self, output: str, expression: str):
+        input_chans: list[ChannelValue] = []
+        output_chan: ChannelValue = None
+
         inputs: list[str] = []
         eval_str = ""
 
@@ -173,12 +226,6 @@ class CalcsModule(Module):
 
         eval_str = eval_str + expression[last_end:]
         print(f"'{expression}' => '{eval_str}'")
-
-        await self.add_calc_expression(inputs, chan_name, eval_str)
-
-    async def add_calc_expression(self, inputs: list[str], output: str, expression: str):
-        input_chans: list[ChannelValue] = []
-        output_chan: ChannelValue = None
 
         for chan_name in inputs:
             if chan_name not in self.input_channels:
@@ -198,9 +245,9 @@ class CalcsModule(Module):
                 self.output_groups[group_name] = await self.v.registerForPublish(group_name)
         output_chan = self.output_groups[group_name].chanByName(output)
 
-        self.calcs.append(Calc.from_expression(input_chans, output_chan, expression))
+        self.calcs.append(Calc.from_expression(input_chans, output_chan, eval_str))
 
-    async def add_calc_method(self, inputs: list[str], output: str, method: CalcMethod):
+    async def add_calc_method(self, output: str, method: CalcMethod, inputs: list[str] = []):
         input_chans: list[ChannelValue] = []
         output_chan: ChannelValue = None
 
@@ -209,7 +256,7 @@ class CalcsModule(Module):
                 group_name = self.v.config.group_name_for_channel(chan_name)
                 if group_name:
                     if group_name not in self.input_groups:
-                        self.input_groups[group_name], _= await self.create_group(group_name)
+                        self.input_groups[group_name] = await self.create_group(group_name)
 
                 self.input_channels[chan_name] = self.input_groups[group_name].chanByName(chan_name)
 
@@ -220,7 +267,7 @@ class CalcsModule(Module):
             if group_name not in self.output_groups:
                 # output groups are always for publish
                 self.output_groups[group_name] = await self.v.registerForPublish(group_name)
-        output_chan = self.output_groups[group_name].chanByName(chan_name)
+        output_chan = self.output_groups[group_name].chanByName(output)
 
         self.calcs.append(Calc.from_method(input_chans, output_chan, method))
 

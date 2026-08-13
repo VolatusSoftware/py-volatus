@@ -7,6 +7,7 @@ from fastapi import FastAPI, APIRouter
 from enum import Enum
 from typing import final
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 import uvicorn
 import os
@@ -36,6 +37,21 @@ from volatus.proto.stop_log_pb2 import StopLog
 from volatus.proto.event_pb2 import EventLevel, Event, Events
 from volatus.proto.tcp_payload_pb2 import *
 
+class Identity:
+    def type(self) -> str:
+        return type(self).__name__
+
+    @abstractmethod
+    def value(self) -> str:
+        raise NotImplementedError
+
+class ModuleIdentity(Identity):
+    def __init__(self, module_name: str):
+        self.module_name = module_name
+    
+    def value(self) -> str:
+        return self.module_name
+    
 class Module:
     @final
     def __init__(self, task_config: TaskConfig, v: "Volatus", name: str = None):
@@ -48,7 +64,17 @@ class Module:
 
         self._created_groups: dict[str, ChannelGroup] = {}
 
+        self._task: asyncio.Task = None
+
         self.module_init()
+
+    def launch(self):
+        self.module_init()
+        self._task = asyncio.create_task(self.module_loop())
+
+    def stop(self):
+        if self._task:
+            self._task.cancel()
 
     @abstractmethod
     def module_init(self) -> None:
@@ -57,6 +83,9 @@ class Module:
     @abstractmethod
     async def module_loop(self):
         raise NotImplementedError
+
+    def module_ids(self) -> list[Identity]:
+        return []
 
     @staticmethod
     @abstractmethod
@@ -77,7 +106,7 @@ class Module:
             # own group, return group created for publishing
             return await self.v.registerForPublish(group_name)
         else:
-            return await self.v.subscribe(group_name, timeout)[0]
+            return (await self.v.subscribe(group_name, timeout))[0]
 
 _module_types: dict[str, Module] = {}
 """Stores registered module types for automatically launching modules from vjson config."""
@@ -181,6 +210,11 @@ class StartLogCommand(VCommand):
 
         print(f"Send Q size: {count}")
 
+type VolatusApp = Callable[[Volatus], None]
+
+async def _ini_app_run(method: VolatusApp, ini_path: str = 'volatus.ini', app_version: str = '0.0.0'):
+    async with Volatus.from_ini(ini_path, app_version) as v:
+        await method(v)
 
 class Volatus:
     """The main API class for interacting with Volatus configs and systems."""
@@ -232,7 +266,10 @@ class Volatus:
         self._tcp: TCPMessaging
         self._connectionTimeout = connectionTimeout
 
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._ids: dict[str, dict[str, str]] = {}
+        """Stores lookup of identity type -> identity value -> module name"""
+
+        self._tasks: dict[str, Module] = {}
 
         self._seq = 0
 
@@ -279,19 +316,9 @@ class Volatus:
     def main(async_main):
         asyncio.run(async_main())
 
-    # async def init_calcs(self, task_name: str):
-    #     if self._calcs:
-    #         raise RuntimeError("Calcs are already initialized.")
-
-    #     task_cfg = self.config.lookupTaskByName(task_name, self.nodeName, self.clusterName)
-    #     self._calcs = CalcsModule(task_cfg, self)
-    #     self._calcs_task = asyncio.create_task(self._calcs.module_loop())
-
-    # async def add_calc(self, inputs: list[str], outputs: list[str], method: CalcMethod):
-    #     if not self._calcs:
-    #         raise RuntimeError("Calcs must be initialized with init_calcs() first.")
-        
-    #     await self._calcs.add_calc(inputs, outputs, method)
+    @staticmethod
+    def ini_app(async_app, ini_path: str = 'volatus.ini', app_version: str = '0.0.0'):
+        asyncio.run(_ini_app_run(async_app, ini_path, app_version))
 
 
     async def __initFromConfig(self):
@@ -386,18 +413,53 @@ class Volatus:
                     continue
 
                 module = mod_cls(task_cfg, self, name)
-                try:
-                    print(f"Initializing task '{name}' as '{task_type}'.")
-                    module.module_init()
-                except Exception as e:
-                    print(f"Task init failed for '{name}': {e}")
+                await self.launch_module(module)
+
+    async def launch_module(self, module: Module):
+        mod_type = module.module_type() #staticmethod can be called before init
+
+        print(f"Launching module '{module.name}' as type '{mod_type}'.")
+        try:
+            module.launch()
+            self._tasks[module.name] = module
+            ids = module.module_ids()
+            ids.append(ModuleIdentity(module.name))
+
+            for id in ids:
+                values = self._ids.get(id.type())
+                if not values:
+                    values = {}
+                    self._ids[id.type()] = values
+
+                name = values.get(id.value())
+                if name:
+                    print(f"Duplicate identity {id.type()}:{id.value()}, ignoring.")
                     continue
 
-                mod_task = asyncio.create_task(module.module_loop())
+                values[id.value()] = module.name
 
-                self._tasks[name] = mod_task
+            print(f"Task '{module.name}' launched.")
+        except Exception as e:
+            print(f"Task '{module.name}' launch failed: {e}")
 
-                print(f"Task '{name}' launched.")
+    def lookup_id[T: Module](self, id: Identity, as_type: type[T] = Module) -> T | None:
+        values = self._ids.get(id.type())
+        if values:
+            name = values.get(id.value())
+            if name:
+                return self._tasks.get(name)
+
+        return None
+
+    async def lookup_id_timeout[T: Module](self, id: Identity, as_type: type[T] = Module, timeout_s: float = 1) -> T | None:
+        module: Module = None
+        start = time.time()
+        while time.time() - start < timeout_s:
+            module = self.lookup_id(id)
+            if not module:
+                await asyncio.sleep(0.01)
+
+        return module
 
     async def waitForConnection(self):
         start = time.time()
@@ -418,7 +480,7 @@ class Volatus:
         """Stops all communication tasks managed by the Volatus framework to prepare for reloading configuration or stopping the Python app."""
 
         for _, task in self._tasks.items():
-            task.cancel()
+            task.stop()
 
         if hasattr(self, "_tcp"):
             self._tcp.shutdown()

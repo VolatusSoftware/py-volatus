@@ -232,6 +232,8 @@ class Telemetry:
         self._pubGroups: dict[str, GroupPublisher] = dict()
         self._writers: dict[EndpointConfig, UdpWriter] = dict()
         self._seqFunc: Callable[[], int] = seqFunc
+        self._sub_lock = asyncio.Lock()
+        self._pub_lock = asyncio.Lock()
 
     async def subscribe(
         self, groupCfg: GroupConfig, timeout_s: float = None
@@ -246,30 +248,31 @@ class Telemetry:
         :return: The group that was subscribed to and true if data has been received before the timeout.
         :rtype: tuple[ChannelGroup, bool]
         """
-        # check to see if group already exists
-        group = self._subGroups.get(groupCfg.name)
-        if not group:
-            endpt = self._telemCfg.endpt
+        async with self._sub_lock:
+            # check to see if group already exists
+            group = self._subGroups.get(groupCfg.name)
+            if not group:
+                endpt = self._telemCfg.endpt
 
-            if self._telemCfg.routing == TelemetryRouting.Multicast:
-                endpt = groupCfg.publishConfig
+                if self._telemCfg.routing == TelemetryRouting.Multicast:
+                    endpt = groupCfg.publishConfig
 
-            group = ChannelGroup(groupCfg)
-            self._subGroups[group.name] = group
+                group = ChannelGroup(groupCfg)
+                self._subGroups[group.name] = group
 
-            if not endpt:
-                raise ValueError(
-                    f"No valid telemetry config for Group {groupCfg.name()} and it cannot be subscribed to. Ensure a Unicast telemetry config is provided or a group publish config."
-                )
+                if not endpt:
+                    raise ValueError(
+                        f"No valid telemetry config for Group {groupCfg.name()} and it cannot be subscribed to. Ensure a Unicast telemetry config is provided or a group publish config."
+                    )
 
-            if endpt in self._subscribers:
-                sub = self._subscribers[endpt]
-                sub.addGroup(group)
-            else:
-                sub = Subscriber(endpt, self._bindAddress)
-                self._subscribers[endpt] = sub
-                sub.addGroup(group)
-                await sub.start()
+                if endpt in self._subscribers:
+                    sub = self._subscribers[endpt]
+                    sub.addGroup(group)
+                else:
+                    sub = Subscriber(endpt, self._bindAddress)
+                    self._subscribers[endpt] = sub
+                    sub.addGroup(group)
+                    await sub.start()
 
         # get first channel to check for data
         chan = group.chanByIndex(0)
@@ -295,27 +298,28 @@ class Telemetry:
         :rtype: ChannelGroup
         """
 
-        # Check if group is already registered and return early if it exists
-        pubGroup = self._pubGroups.get(groupCfg.name)
-        if pubGroup != None:
-            return pubGroup.group
+        async with self._pub_lock:
+            # Check if group is already registered and return early if it exists
+            pubGroup = self._pubGroups.get(groupCfg.name)
+            if pubGroup != None:
+                return pubGroup.group
 
-        group = ChannelGroup(groupCfg)
-        endpt = groupCfg.publishConfig
+            group = ChannelGroup(groupCfg)
+            endpt = groupCfg.publishConfig
 
-        if self._telemCfg.routing == TelemetryRouting.Unicast:
-            endpt = self._telemCfg.endpt
-
-        writer = self._writers.get(endpt)
-        if not writer:
             if self._telemCfg.routing == TelemetryRouting.Unicast:
-                writer = UdpWriter(endpt.address, endpt.port, self._nodeId, self._bindAddress)
-            await writer.open()
+                endpt = self._telemCfg.endpt
 
-        pubGroup = GroupPublisher(group, endpt, writer, self._seqFunc)
-        self._pubGroups[group.name] = pubGroup
+            writer = self._writers.get(endpt)
+            if not writer:
+                if self._telemCfg.routing == TelemetryRouting.Unicast:
+                    writer = UdpWriter(endpt.address, endpt.port, self._nodeId, self._bindAddress)
+                await writer.open()
 
-        return group
+            pubGroup = GroupPublisher(group, endpt, writer, self._seqFunc)
+            self._pubGroups[group.name] = pubGroup
+
+            return group
 
     def publish(self, group: ChannelGroup, set_time: bool = True):
 
