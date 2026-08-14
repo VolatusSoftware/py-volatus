@@ -29,8 +29,12 @@ async def app(v: Volatus):
         return
 
     # Can now register calcs methods that use specified input channel values and the specified method
-    # to generate updated values for the output channels.
+    #  to generate updated values for the output channels.
     # These are simple calcs but this pattern enables utilizing external libs such as refprop/coolprop
+    # When providing methods to run calcs, the expected input channels need to be specified so the
+    #  calc engine can initialize the input channels properly.
+    # It's also possible to not rely on input channels at all (omit the list) and provide a value
+    #  directly from the Python code.
     await c.add_calc_method("sum_calc", simple_sum_calc, ["sum_a", "sum_b"])
     await c.add_calc_method("avg_calc", avg_calc, ["avg_input"])
 
