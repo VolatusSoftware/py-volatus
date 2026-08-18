@@ -9,9 +9,13 @@ from .telemetry import ChannelGroup, ChannelValue
 from .volatus import Module, register_module
 
 from collections.abc import Callable
+from collections import deque
 from types import CodeType
+from dataclasses import dataclass
+import numpy as np
 import asyncio
 import re
+import time
 
 type CalcMethod = Callable[[dict[str, float]], float]
 """Represents a method that calculates a single value from a dictionary of input values."""
@@ -22,7 +26,7 @@ class RunningAvg:
         self._vals: list[float] = []
         self._avg: float = 0.0
 
-    def add(self, val: float) -> float:
+    def add(self, val: float, time_ns: int) -> float:
         val = val / self._count
         self._vals.append(val)
         self._avg += val
@@ -38,9 +42,35 @@ class EmaFilter:
         self._b = 1 - alpha
         self._val = 0
 
-    def calc(self, val: float) -> float:
+    def calc(self, val: float, time_ns: int) -> float:
         self._val = self._a * val + self._b * self._val
         return self._val
+
+class RateCalc:
+    def __init__(self, samp_count: int):
+        self.val: deque[float]= deque(maxlen=samp_count)
+        self.time : deque[float] = deque(maxlen=samp_count)
+        self.start = 0
+
+    def calc(self, val: float, time_ns: int) -> float:
+        if val is None or time_ns == 0:
+            return 0
+
+        if self.start == 0:
+            self.start = time_ns
+        
+        self.val.append(val)
+        self.time.append(time_ns / 1e9)
+
+        if len(self.val) < 3:
+            return 0
+
+        if self.time[len(self.time) - 1] - self.time[0] == 0:
+            return 0
+        
+        x = [time - self.time[0] for time in self.time]
+        slope, _ = np.polyfit(x, self.val, 1)
+        return slope * 60
 
 def avg(*args) -> float:
     return sum(args) / len(args)
@@ -80,14 +110,21 @@ class Calc:
                 f_num = len(self.fn)
                 name = f"f{f_num}"
                 self.fn[name] = avg.add
-                return f"self.fn['{name}']({args[0]})"
+                return f"self.fn['{name}']({args[0]}, time_ns)"
 
             case 'ema':
                 ema = EmaFilter(float(args[1]))
                 f_num = len(self.fn)
                 name = f"f{f_num}"
                 self.fn[name] = ema.calc
-                return f"self.fn['{name}']({args[0]})"
+                return f"self.fn['{name}']({args[0]}, time_ns)"
+
+            case 'rate':
+                rate = RateCalc(int(args[1]))
+                f_num = len(self.fn)
+                name = f"f{f_num}"
+                self.fn[name] = rate.calc
+                return f"self.fn['{name}']({args[0]}, time_ns)"
 
             case _:
                 # Not a stateful fn, pass back None so that original isn't modified
@@ -130,14 +167,16 @@ class Calc:
         except Exception as e:
             print(f"{e}")
 
-    def _do_expr(self, inputs: dict[str, float]) -> float: #ignore unused, is available as local for the eval()
+    def _do_expr(self, inputs: dict[str, float], time_ns: int) -> float: #ignore unused, is available as local for the eval()
         return eval(self.calc)
 
     def do_calc(self):
+        time_ns: int = 0
         for name, channel in self.inputs.items():
             self.input_vals[name] = channel.value
+            time_ns = max(channel.time_ns, time_ns)
 
-        val = self.method(self.input_vals)
+        val = self.method(self.input_vals, time_ns)
         self.output.value = val
 
 class CalcConfig:
@@ -179,7 +218,6 @@ class CalcsModule(Module):
         cfg_period = self.task_config.lookupChildByName("period_ms")
         if cfg_period:
             self.period = cfg_period.value()
-
 
         self._reg_q: asyncio.Queue[CalcConfig] = asyncio.Queue()
 
