@@ -129,7 +129,7 @@ class ChannelInfo:
         self.type = type
         self._meta = {field.name: field for field in meta}
 
-        self.set_name(name)
+        self.set_meta(MetaField.from_STR("name", name))
 
     def set_meta(self, field: MetaField):
         self._meta[field.name] = field
@@ -158,7 +158,7 @@ def _chan_fmt(type: ValType, str_len: int = -1) -> str:
 class FileInfo:
     def __init__(self, meta: MetaList = [], channel_info: list[ChannelInfo] = []):
         self._meta = {field.name: field for field in meta}
-        self._chans = {channel.name: channel for channel in channel_info}
+        self._chans = {channel.get_name(): channel for channel in channel_info}
 
     def set_meta(self, meta: MetaField):
         self._meta[meta.name] = meta
@@ -251,19 +251,19 @@ class SimpleLog:
         return self._info.get_channel(chan_name).get_meta(meta_name)
 
     def _encode_str(self, val: str) -> bytes:
-        l = len(str)
-        return struct.pack(f"<I{l}s", l, val)
+        l = len(val)
+        return struct.pack(f"<I{l}s", l, val.encode())
 
-    def _encode_length(self, l: int) -> bytes:
-        return struct.pack("<l", l)
+    def _encode_length(self, s: bytes) -> bytes:
+        return struct.pack("<l", len(s))
 
     def _encode_section(self, type: Section, section: bytes) -> bytes:
         return type.encode() + self._encode_length(section) + section
 
     def _encode_meta(self, meta: MetaField) -> bytes:
-        buf += self._encode_str(meta.name) # 4 byte string length + string bytes
-        buf += meta.type.encode()          # byte of meta type
-        buf += meta.val                    # value is stored encoded already
+        buf = self._encode_str(meta.name) # 4 byte string length + string bytes
+        buf += meta.type.encode()         # byte of meta type
+        buf += meta.val                   # value is stored encoded already
 
         return self._encode_section(Section.MetaField, buf)
 
@@ -276,8 +276,8 @@ class SimpleLog:
         return self._encode_section(Section.MetaList, buf)
 
     def _encode_chan(self, chan: ChannelInfo) -> bytes:
-        buf += self._encode_str(chan.get_name())
-        buf = chan.type.encode()
+        buf = self._encode_str(chan.get_name())
+        buf += chan.type.encode()
         buf += self._encode_meta_dict(chan._meta, ["name"]) # skips name field, putting that up front
 
         return self._encode_section(Section.Channel, buf)
@@ -312,11 +312,13 @@ class SimpleLog:
 
         self._started = True
 
-    def _format_entry(self, timestamp: int, data: np.ndarray) -> bytes:
-        if len(data.shape) != 1:
-            raise ValueError("Array must be single dimension.")
+    def _format_entry(self, timestamp: int, data: Iterable[float]) -> bytes:
+        buf = struct.pack('<Q', timestamp)
 
-        return struct.pack('<Q', timestamp) + struct.pack(self._format, data) + b"\n"
+        for i, (_, chan) in enumerate(self._info._chans.items()):
+            buf += struct.pack(_chan_fmt(chan.type), data[i])
+
+        return buf
 
     async def write_entry(self, timestamp: int, data: Iterable[float]):
         self._check_started()
