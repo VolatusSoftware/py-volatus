@@ -2,9 +2,12 @@ from volatus.config import Cfg, VL_Type
 from volatus.volatus import Volatus, EventLevel, LogState, TcpPayload, TCPMessaging
 from volatus.telemetry import ChannelGroup, ChannelValue
 from volatus.proto.cmd_digital_pb2 import *
+from volatus.simple_log import SimpleLog, FileInfo, ChannelInfo
 from pydantic import BaseModel, ValidationError
 from pathlib import Path
 import numpy as np
+import os
+import time
 
 import asyncio
 
@@ -72,6 +75,9 @@ async def main():
         # subscribe to a known group we're interested in reading published data from
         gAI, hasData = await v.subscribe('TestAI', 2)
 
+        #create logger to locally log telemetered data
+        gAI_logger = SimpleLog.for_group(gAI.config)
+
         vals, _ = gAI.allValues()
         print(vals)
 
@@ -117,12 +123,19 @@ async def main():
         # the create___Command methods return a VCommand object with a send() that can be called right away or sent later
         v.createDigitalCommand('DO00', True).send()
 
+        log_path = Path("test.slog")
+        if log_path.is_file():
+            os.remove(log_path)
+        gAI_logger.start("test.slog")
+
         # loop ~10Hz displaying current value for the channel
         # updates first PythonData value to publish as telemetry
         for i in range(40):
             pyVals[0] += 1.0
             pyGroup.updateValues(pyVals)
             v.publish(pyGroup)
+
+            gAI_logger.write_entry(time.time_ns(), gAI.values())
 
             print(ch0.value)
             await asyncio.sleep(0.1)
@@ -133,6 +146,8 @@ async def main():
         v.reportEvent('Events', EventLevel.EVENTLEVEL_INFO, 'Test Python', 'Sequence complete')
 
         v.createStopLogCommand('Logging', 'Stopping').send()
+
+        gAI_logger.stop()
 
         # ensure stop log command has been handled before allowing app to close.
         # this helps make sure the command has had time to make it through the async
