@@ -147,7 +147,7 @@ async def main():
 
         v.createStopLogCommand('Logging', 'Stopping').send()
 
-        gAI_logger.stop()
+        await gAI_logger.stop()
 
         # ensure stop log command has been handled before allowing app to close.
         # this helps make sure the command has had time to make it through the async

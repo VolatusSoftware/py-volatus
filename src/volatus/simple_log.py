@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 from dataclasses import dataclass
 from enum import Enum
+import aiofiles
 
 from .config import GroupConfig
 
@@ -180,6 +181,7 @@ class SimpleLog:
         self._info = info
         self._path: Path = None
         self._format: str = ""
+        self._file = None
 
     @staticmethod
     def for_group(group_cfg: GroupConfig) -> 'SimpleLog':
@@ -288,24 +290,24 @@ class SimpleLog:
 
         return self._encode_section(Section.ChanList, buf)
 
-    def _write_info(self):
+    async def _write_info(self):
         self._file.write(b"SLOG\n") # File type identifier
 
-        self._file.write(self._encode_meta_dict(self._info._meta))
-        self._file.write(self._encode_chan_dict(self._info._chans))
+        await self._file.write(self._encode_meta_dict(self._info._meta))
+        await self._file.write(self._encode_chan_dict(self._info._chans))
 
         # start data segment which runs to end of file
-        self._file.write(Section.Data.encode() + b"\n")
+        await self._file.write(Section.Data.encode() + b"\n")
 
-    def start(self, path: Path):
+    async def start(self, path: Path):
         self._check_not_started()
 
-        self._file = open(path, "wb")
+        self._file = await aiofiles.open(path, "wb")
         self._path = path
 
         self.set_meta(MetaField.from_STR("started", datetime.now(timezone.utc).replace(microsecond=0).isoformat()))
 
-        self._write_info()
+        await self._write_info()
         self._format = self._info.entry_format()
 
         self._started = True
@@ -316,16 +318,16 @@ class SimpleLog:
 
         return struct.pack('<Q', timestamp) + struct.pack(self._format, data) + b"\n"
 
-    def write_entry(self, timestamp: int, data: Iterable[float]):
+    async def write_entry(self, timestamp: int, data: Iterable[float]):
         self._check_started()
 
-        self._file.write(self._format_entry(timestamp, data))
+        await self._file.write(self._format_entry(timestamp, data))
 
-    def stop(self):
+    async def stop(self):
         self._check_started()
 
         self._started = False
 
-        self._file.close()
+        await self._file.close()
         self._file = None
         # Leave _path intact for followup queries until next log started
