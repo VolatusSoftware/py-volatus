@@ -659,9 +659,10 @@ class Volatus:
         :return: The initialized command ready to be sent.
         :rtype: VCommand
         """
-        cmd = CmdDigital()
-        cmd.channel = chanName
-        cmd.value = value
+        cmd = CmdDigitalMultiple()
+        val = cmd.values.add()
+        val.channel = chanName
+        val.value = value
 
         chan = self.config.lookupChannelByName(chanName)
         if not chan:
@@ -691,9 +692,10 @@ class Volatus:
         :return: The initialized command ready to be sent.
         :rtype: VCommand
         """
-        cmd = CmdAnalog()
-        cmd.channel = chanName
-        cmd.value = value
+        cmd = CmdAnalogMultiple()
+        val = cmd.values.add()
+        val.channel = chanName
+        val.value = value
 
         chan = self.config.lookupChannelByName(chanName)
         if not chan:

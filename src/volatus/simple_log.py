@@ -291,18 +291,19 @@ class SimpleLog:
         return self._encode_section(Section.ChanList, buf)
 
     async def _write_info(self):
-        self._file.write(b"SLOG\n") # File type identifier
+        await self._file.write(b"SLOG\n") # File type identifier
 
         await self._file.write(self._encode_meta_dict(self._info._meta))
         await self._file.write(self._encode_chan_dict(self._info._chans))
 
         # start data segment which runs to end of file
-        await self._file.write(Section.Data.encode() + b"\n")
+        await self._file.write(Section.Data.encode() + b"\n\n\n\n")
+        await self._file.flush()
 
     async def start(self, path: Path):
         self._check_not_started()
 
-        self._file = await aiofiles.open(path, "wb")
+        self._file = await aiofiles.open(path, "wb", buffering=1024*1024*50)
         self._path = path
 
         self.set_meta(MetaField.from_STR("started", datetime.now(timezone.utc).replace(microsecond=0).isoformat()))
